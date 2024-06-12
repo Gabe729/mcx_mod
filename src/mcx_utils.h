@@ -78,12 +78,16 @@ enum TBJData {JDB_mixed, JDB_nulltype, JDB_noop, JDB_true, JDB_false,
 /**
  * The structure to store optical properties
  * Four relevant optical properties are needed
+ * ne, chi, and B have been added to store birefringence properties
  */
 typedef struct MCXMedium {
     float mua;                     /**< absorption coefficient (in 1/mm) */
     float mus;                     /**< scattering coefficient (in 1/mm) */
     float g;                       /**< anisotropy factor g: -1 to 1 */
     float n;                       /**< refractive index */
+    float ne;                      /**< extraordinary refractive index */
+    float chi;                     /**< optical rotation (in deg/mm) */
+    float3 B;                      /**< birefringence extraordinary axis vector */
 } Medium;
 
 /**
