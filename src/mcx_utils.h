@@ -87,7 +87,9 @@ typedef struct MCXMedium {
     float n;                       /**< refractive index */
     float ne;                      /**< extraordinary refractive index */
     float chi;                     /**< optical rotation (in deg/mm) */
-    float3 B;                      /**< birefringence extraordinary axis vector */
+    float Bx;                      /**< birefringence extraordinary axis x component */
+    float By;                      /**< birefringence extraordinary axis y component */
+    float Bz;                      /**< birefringence extraordinary axis z component */
 } Medium;
 
 /**
