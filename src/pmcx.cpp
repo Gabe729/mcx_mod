@@ -666,8 +666,8 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
 
         auto buffer_info = f_style_volume.request();
 
-        if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 4) || buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 4) {
-            throw py::value_error("the 'prop' field must have 4 columns (mua,mus,g,n)");
+        if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 9) || buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 9) {
+            throw py::value_error("the 'prop' field must have 9 columns (mua,mus,g,n,ne,chi,Bx,By,Bz)");
         }
 
         mcx_config.medianum = (buffer_info.shape.size() == 1) ? 1 : buffer_info.shape.at(0);
@@ -679,7 +679,8 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
         mcx_config.prop = (Medium*) malloc(mcx_config.medianum * sizeof(Medium));
         auto val = static_cast<float*>(buffer_info.ptr);
 
-        for (int j = 0; j < 4; j++)
+        // Modified to include birefringence properties ne, chi, Bx, By, Bz
+        for (int j = 0; j < 9; j++)
             for (int i = 0; i < mcx_config.medianum; i++) {
                 ((float*) (&mcx_config.prop[i]))[j] = val[j * mcx_config.medianum + i];
             }
