@@ -667,7 +667,7 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
         auto buffer_info = f_style_volume.request();
 
         if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 4) || buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 4) {
-            throw py::value_error("the 'prop' field must have 9 columns (mua,mus,g,n");
+            throw py::value_error("the 'prop' field must have 4 columns (mua,mus,g,n");
         }
 
         mcx_config.medianum = (buffer_info.shape.size() == 1) ? 1 : buffer_info.shape.at(0);
