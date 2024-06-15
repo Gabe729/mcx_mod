@@ -178,6 +178,14 @@ __device__ float dot(const float3& a, const float3& b) {
 
 __constant__ float4 gproperty[MAX_PROP_AND_DETECTORS];
 
+/**
+ * @brief Birefringence properties for each medium, stored in constant memory.
+ *
+ * Each element of this array contains the birefringence properties (ne, chi)
+ * for a specific medium. The index of the array corresponds to the medium ID.
+ */
+__constant__ Gjonesprop gjonesproperty[MAX_PROP_AND_DETECTORS];
+
 
 /**
  * @brief Simulation constant parameters stored in the constant memory
@@ -3218,6 +3226,9 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     if (cfg->srcdata) {
         CUDA_ASSERT(cudaMemcpyToSymbol(gproperty, cfg->srcdata,  cfg->extrasrclen * 4 * sizeof(float4), cfg->medianum * sizeof(Medium) + cfg->detnum * sizeof(float4), cudaMemcpyHostToDevice));
     }
+
+    // Allocate and transfer jonesprop data to the GPU device (NEW)
+    CUDA_ASSERT(cudaMemcpyToSymbol(gjonesproperty, cfg->jonesprop, cfg->medianum * sizeof(JonesMedium), 0, cudaMemcpyHostToDevice));
 
     MCX_FPRINTF(cfg->flog, "init complete : %d ms\n", GetTimeMillis() - tic);
 
