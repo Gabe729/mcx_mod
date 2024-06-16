@@ -122,8 +122,8 @@ typedef union  __align__(16) GProperty {
 
 typedef union  __align__(16) GJonesProperty {
     JonesMedium d; /*defined in mcx_utils.h*/
-    float2 v;
-    float  f[2];
+    //float5 v;?
+    float  f[5];     /**< (ne, chi, Bx, By, Bz) */
 } Gjonesprop;
 
 typedef struct  __align__(16) MCXSource {
