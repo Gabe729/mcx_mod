@@ -260,6 +260,7 @@ void mcx_initcfg(Config* cfg) {
     cfg->isgpuinfo = 0;
     cfg->prop = NULL;
     cfg->polprop = NULL;
+    cfg->jonesprop = NULL;    // NEW
     cfg->detpos = NULL;
     cfg->smatrix = NULL;
     cfg->vol = NULL;
