@@ -1859,7 +1859,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
             GPUDEBUG(("scat L=%f RNG=[%0lX %0lX] \n", f.pscat, t[0], t[1]));
 
             if (v.nscat != EPS) { //< if v.nscat is EPS, this means it is the initial launch direction, no need to change direction
-                //< random arimuthal angle
+                //< random azimuthal angle
                 float cphi = 1.f, sphi = 0.f, theta, stheta, ctheta;
                 float tmp0 = 0.f;
 
@@ -2785,12 +2785,11 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                       cfg->maxdetphoton * hostdetreclen, cfg->seed, (uint)cfg->outputtype, 0, 0, cfg->faststep,
                       cfg->debuglevel, cfg->savedetflag, hostdetreclen, partialdata, w0offset, cfg->mediabyte,
                       (uint)cfg->maxjumpdebug, cfg->gscatter, is2d, cfg->replaydet, cfg->srcnum,
-                      cfg->nphase, cfg->nphase + (cfg->nphase & 0x1), cfg->nangle, cfg->nangle + (cfg->nangle & 0x1), cfg->omega
+                      cfg->nphase, cfg->nphase + (cfg->nphase & 0x1), cfg->nangle, cfg->nangle + (cfg->nangle & 0x1), cfg->omega, cfg->lambda   // Add lambda initialization
                      };
 
     if (param.isatomic) {
         param.skipradius2 = 0.f;
-    }
 
     /** Start multiple CPU threads using OpenMP, one thread for each GPU device to run simultaneously, \c threadid returns the current thread ID */
 #ifdef _OPENMP
