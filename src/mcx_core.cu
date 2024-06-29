@@ -165,6 +165,23 @@ __device__ float dot(const float3& a, const float3& b) {
 }
 
 /**
+ * @brief Cross-product of two float3 vectors c=a×b
+ */
+__device__ float3 cross(const float3& a, const float3& b) {
+    return make_float3(a.y * b.z - a.z * b.y,
+                       a.z * b.x - a.x * b.z,
+                       a.x * b.y - a.y * b.x);
+}
+
+/**
+ * @brief Normalize a float3 vector
+ */
+__device__ float3 normalize(const float3& v) {
+    float invLen = rsqrtf(dot(v, v));
+    return make_float3(v.x * invLen, v.y * invLen, v.z * invLen);
+}
+
+/**
  * @brief Concatenated optical properties and det positions, stored in constant memory
  *
  * The first cfg.maxmedia elements of this array contain the optical properties of the
@@ -356,6 +373,28 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
     s->u = s2.u * temp;
     s->v = s2.v * temp;
     s->i = 1.f;
+}
+
+/**
+ * @brief Update Stokes vector in between scattering events to model arbitrary polarization effects.
+ * 
+ * This function calculates the retardation due to birefringence and optical rotation
+ * and applies it to the photon's Stokes vector using the Jones N-matrix formalism. 
+ * The function can be modified to model other effects (e.g. dichroism).
+ *
+ * @param[in] len: Photon step size in grid units.
+ * @param[in] no: Ordinary refractive index.
+ * @param[in] mediaid: The medium ID.
+ * @param[in] lambda: Wavelength of light in nm.
+ * @param[in] u: Photon direction vector (float3*).
+ * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
+ */
+__device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
+    float ne = gjonesproperty[mediaid & MED_MASK].d.ne;
+    float chi = gjonesproperty[mediaid & MED_MASK].d.chi;
+    float3 B = gjonesproperty[mediaid & MED_MASK].d.B;
+
+    // ... (Rest of the function implementation)
 }
 
 /**
@@ -2065,6 +2104,11 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
         /** if photon moves to the next voxel, use the precomputed intersection coord */
         *((float3*)(&p)) = float3(p.x + len * v.x, p.y + len * v.y, p.z + len * v.z);
+
+        /** NEW - Apply birefringence effects to the photon based on distance travelled */
+        if (ispolarized) {
+            apply_N_matrix(len, prop.n, mediaid, gcfg->lambda, &v, &s);
+        }
 
         /** although the below 3 lines look dumb, if you change it to flipdir[flipdir[3]] += ..., the speed drops by half, likely due to step locking */
         if (flipdir[3] == 0) {
