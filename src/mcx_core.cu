@@ -375,6 +375,71 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
     s->i = 1.f;
 }
 
+__device__ void jones_to_mueller(float2 J11, float2 J12, float2 J21, float2 J22, float* M) {
+    // E_k = J_k J_k*
+    float E1 = J11.x * J11.x + J11.y * J11.y;
+    float E2 = J12.x * J12.x + J12.y * J12.y;
+    float E3 = J21.x * J21.x + J21.y * J21.y;
+    float E4 = J22.x * J22.x + J22.y * J22.y;
+
+    // F_kl = Re(J_k J_l*)
+    float F13 = J11.x * J21.x + J11.y * J21.y;
+    float F14 = J11.x * J22.x + J11.y * J22.y;
+    float F23 = J12.x * J21.x + J12.y * J21.y;
+    float F24 = J12.x * J22.x + J12.y * J22.y;
+
+    // G_kl = -Im(J_k J_l*)
+    float G13 = J11.y * J21.x - J11.x * J21.y;
+    float G14 = J11.y * J22.x - J11.x * J22.y;
+    float G23 = J12.y * J21.x - J12.x * J21.y;
+    float G24 = J12.y * J22.x - J12.x * J22.y;
+
+    M[0]  = 0.5f * (E1 + E2 + E3 + E4);
+    M[1]  = 0.5f * (E1 - E2 + E3 - E4);
+    M[2]  = F13 + F24;
+    M[3]  = G14 - G23;
+    M[4]  = 0.5f * (E1 + E2 - E3 - E4);
+    M[5]  = 0.5f * (E1 - E2 - E3 + E4);
+    M[6]  = F13 - F24;
+    M[7]  = G14 + G23;
+    M[8]  = F13 + F23;
+    M[9]  = F13 - F23;
+    M[10] = F11 + F22;
+    M[11] = G12 + G21;
+    M[12] = G13 + G23;
+    M[13] = G13 - G23;
+    M[14] = G12 - G21;
+    M[15] = F11 - F22;
+}
+
+/**
+ * @brief Calculate the angle between two 3D vectors
+ *
+ * This function computes the angle between two 3D vectors. If a reference direction
+ * is provided, it returns a signed angle (-π/2 to π/2) indicating the rotation direction.
+ * Without a reference, it returns the smallest angle (0 to π/2) between the vectors.
+ *
+ * @param[in] a First input vector (should be normalized)
+ * @param[in] b Second input vector (should be normalized)
+ * @param[in] ref_dir Optional reference direction for determining rotation sign
+ * @return Angle between vectors in radians
+ */
+__device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
+    float3 crossprod = cross(a, b);
+    
+    // Use fast CUDA intrinsic function
+    float angle = atan2f(__fsqrt_rn(dot(crossprod, crossprod)), dot(a, b));
+    
+    if (ref_dir == NULL) {
+        // 'find theta' case: return smallest angle (0 to π/2)
+        return fminf(angle, ONE_PI - angle);
+    } else {
+        // 'find beta' case: return signed angle (-π/2 to π/2)
+        float sign = copysignf(1.0f, dot(crossprod, *ref_dir));
+        return sign * fminf(angle, ONE_PI - angle);
+    }
+}
+
 /**
  * @brief Update Stokes vector in between scattering events to model arbitrary polarization effects.
  * 
@@ -392,9 +457,79 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
     float ne = gjonesproperty[mediaid & MED_MASK].d.ne;
     float chi = gjonesproperty[mediaid & MED_MASK].d.chi;
-    float3 B = gjonesproperty[mediaid & MED_MASK].d.B;
+    
+    // Only perform calculations if there is birefringence
+    if (fabsf(ne - no) > 1e-6f || fabsf(chi) > 1e-6f) {
+        float3 B = gjonesproperty[mediaid & MED_MASK].d.B;
+        
+        // Calculate e_parallel and b'
+        float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
+        float3 e_perp = normalize(cross(*u, z_axis));
+        float3 e_parallel = cross(*u, e_perp);  // No need to normalize
+        float3 b_prime = normalize(cross(*u, cross(B, *u)));  // Rotated extraordinary axis
 
-    // ... (Rest of the function implementation)
+        // Calculate angles
+        float theta = angle_between(B, *u);
+        float beta = angle_between(e_parallel, b_prime, u);
+
+        // Calculate birefringence parameters
+        float cos_square_theta = cosf(theta) * cosf(theta);
+        float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
+        float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
+
+        // Calculate Qn
+        float2 Q_N = csqrtf(-g0*g0 - chi*chi);  // This works when LB/CB are the only effects considered
+
+        // Calculate M-matrix elements
+        float2 m1, m2, m3, m4;  
+        
+        if (cabsf(Q_N) > 1e-6f) {
+            float2 sinh_QNs = csinhf(csmulf(Q_N, len));
+            float2 cosh_QNs = ccoshf(csmulf(Q_N, len));
+            float2 factor = cdivf(sinh_QNs, Q_N);
+
+            m1 = caddf(csmulf(make_float2(0.0f, g0), factor), cosh_QNs);
+            m2 = csubf(cosh_QNs, csmulf(make_float2(0.0f, g0), factor));
+            m3 = cmulf(make_float2(chi, 0.0f), factor);
+            m4 = cmulf(make_float2(-chi, 0.0f), factor);
+        } else {
+            // For very small Q_N, use Taylor expansion to avoid division by zero
+            float QNs = cabsf(Q_N) * len;
+            float QNs_sq = QNs * QNs;
+            float factor = len * (1.0f - QNs_sq / 6.0f);
+
+            m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
+            m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
+            m3 = make_float2(chi * factor, 0.0f);
+            m4 = make_float2(-chi * factor, 0.0f);  // This assumes clockwise rotation is positive - needs to be verified
+        }
+
+        // Convert Jones matrix to Mueller matrix
+        float M[16];
+        jones_to_mueller(m1, m2, m3, m4, M);  //// Need to verify function
+
+        // Rotate Stokes vector by beta
+        Stokes s_rotated;
+        rotsphi(s, beta, &s_rotated);   //// Need to sign convention
+
+        // Apply Mueller matrix to rotated Stokes vector
+        float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
+        float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                S_new[i] += M[i*4 + j] * S[j];
+            }
+        }
+
+        // Rotate Stokes vector back
+        Stokes s_final;
+        s_final.i = S_new[0];
+        s_final.q = S_new[1];
+        s_final.u = S_new[2];
+        s_final.v = S_new[3];
+        rotsphi(&s_final, -beta, s);
+    }
 }
 
 /**

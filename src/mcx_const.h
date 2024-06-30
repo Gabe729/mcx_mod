@@ -39,6 +39,7 @@
 #define MCX_VERSION_MAJOR  2
 #define MCX_VERSION_MINOR  6
 
+#define HALF_PI            1.5707963267948966f     /**< pi/2 */
 #define ONE_PI             3.1415926535897932f     /**< pi */
 #define TWO_PI             6.28318530717959f       /**< 2*pi */
 #define R_PI               0.318309886183791f      /**<  1/pi */
