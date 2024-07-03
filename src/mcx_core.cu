@@ -375,41 +375,46 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
     s->i = 1.f;
 }
 
-__device__ void jones_to_mueller(float2 J11, float2 J12, float2 J21, float2 J22, float* M) {
-    // E_k = J_k J_k*
-    float E1 = J11.x * J11.x + J11.y * J11.y;
-    float E2 = J12.x * J12.x + J12.y * J12.y;
-    float E3 = J21.x * J21.x + J21.y * J21.y;
-    float E4 = J22.x * J22.x + J22.y * J22.y;
-
-    // F_kl = Re(J_k J_l*)
-    float F13 = J11.x * J21.x + J11.y * J21.y;
-    float F14 = J11.x * J22.x + J11.y * J22.y;
-    float F23 = J12.x * J21.x + J12.y * J21.y;
-    float F24 = J12.x * J22.x + J12.y * J22.y;
-
-    // G_kl = -Im(J_k J_l*)
-    float G13 = J11.y * J21.x - J11.x * J21.y;
-    float G14 = J11.y * J22.x - J11.x * J22.y;
-    float G23 = J12.y * J21.x - J12.x * J21.y;
-    float G24 = J12.y * J22.x - J12.x * J22.y;
-
+__device__ void jones_to_mueller(float2 m1, float2 m2, float2 m3, float2 m4, float* M) {
+    // Calculate E_k = J_k J_k*
+    float E1 = m1.x * m1.x + m1.y * m1.y;
+    float E2 = m4.x * m4.x + m4.y * m4.y;
+    float E3 = m3.x * m3.x + m3.y * m3.y;
+    float E4 = m2.x * m2.x + m2.y * m2.y;
+    
+    // Calculate F_kl = Re(J_k J_l*)
+    float F12 = m1.x * m4.x + m1.y * m4.y;
+    float F13 = m1.x * m3.x + m1.y * m3.y;
+    float F14 = m1.x * m2.x + m1.y * m2.y;
+    float F32 = m3.x * m4.x + m3.y * m4.y;
+    float F34 = m3.x * m2.x + m3.y * m2.y;
+    float F42 = m2.x * m4.x + m2.y * m4.y;
+    
+    // Calculate G_kl = -Im(J_k J_l*)
+    float G12 = m1.y * m4.x - m1.x * m4.y;
+    float G13 = m1.y * m3.x - m1.x * m3.y;
+    float G14 = m1.y * m2.x - m1.x * m2.y;
+    float G32 = m3.y * m4.x - m3.x * m4.y;
+    float G34 = m3.y * m2.x - m3.x * m2.y;
+    float G42 = m2.y * m4.x - m2.x * m4.y;
+    
+    // Construct Mueller matrix according to Eq. A4.13
     M[0]  = 0.5f * (E1 + E2 + E3 + E4);
     M[1]  = 0.5f * (E1 - E2 + E3 - E4);
-    M[2]  = F13 + F24;
-    M[3]  = G14 - G23;
-    M[4]  = 0.5f * (E1 + E2 - E3 - E4);
-    M[5]  = 0.5f * (E1 - E2 - E3 + E4);
-    M[6]  = F13 - F24;
-    M[7]  = G14 + G23;
-    M[8]  = F13 + F23;
-    M[9]  = F13 - F23;
-    M[10] = F11 + F22;
-    M[11] = G12 + G21;
-    M[12] = G13 + G23;
-    M[13] = G13 - G23;
-    M[14] = G12 - G21;
-    M[15] = F11 - F22;
+    M[2]  = F14 + F32;
+    M[3]  = G14 + G32;
+    M[4]  = 0.5f * (E1 - E2 - E3 + E4);
+    M[5]  = 0.5f * (E1 + E2 - E3 - E4);
+    M[6]  = F14 - F32;
+    M[7]  = G14 - G32;
+    M[8]  = F13 + F42;
+    M[9]  = F13 - F42;
+    M[10] = F12 + F34;
+    M[11] = G12 + G34;
+    M[12] = -G13 - G42;
+    M[13] = -G13 + G42;
+    M[14] = -G12 + G34;
+    M[15] = F12 - F34;
 }
 
 /**
@@ -506,11 +511,11 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
 
         // Convert Jones matrix to Mueller matrix
         float M[16];
-        jones_to_mueller(m1, m2, m3, m4, M);  //// Need to verify function
+        jones_to_mueller(m1, m2, m3, m4, M); 
 
         // Rotate Stokes vector by beta
         Stokes s_rotated;
-        rotsphi(s, beta, &s_rotated);   //// Need to sign convention
+        rotsphi(s, beta, &s_rotated);   //// Need to check sign convention
 
         // Apply Mueller matrix to rotated Stokes vector
         float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
