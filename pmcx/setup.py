@@ -111,6 +111,8 @@ class CMakeBuild(build_ext):
         if not os.path.exists(build_temp):
             os.makedirs(build_temp)
 
+        cmake_args += ['-Dpybind11_DIR=' + '/usr/local/lib/python3.10/dist-packages/pybind11/share/cmake/pybind11/pybind11Config.cmake']    # For Colab
+ 
         subprocess.check_call(["cmake", ext.source_dir] + cmake_args, cwd=build_temp)
         subprocess.check_call(
             ["cmake", "--build", ".", "--target", ext.target] + build_args,
