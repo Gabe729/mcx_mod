@@ -55,7 +55,7 @@
 #define OUTSIDE_VOLUME_MIN 0xFFFFFFFF              /**< flag indicating the index is outside of the volume from x=xmax,y=ymax,z=zmax*/
 #define OUTSIDE_VOLUME_MAX 0x7FFFFFFF              /**< flag indicating the index is outside of the volume from x=0/y=0/z=0*/
 #define BOUNDARY_DET_MASK  0xFFFF0000              /**< flag indicating a boundary face is used as a detector*/
-#define MAX_PROP_AND_DETECTORS   2000              /**< maximum number of property + number of detectors. Reduced from 4000 to accomodate birefringence properties */
+#define MAX_PROP_AND_DETECTORS   1000              /**< maximum number of property + number of detectors. Reduced from 4000 to accomodate birefringence properties */
 #define SEED_FROM_FILE      -999                   /**< special flag indicating to read seeds from an mch file for replay */
 #define NANGLES            1000                    /**< number of discretization points in scattering angles */
 
