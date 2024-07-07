@@ -50,6 +50,7 @@ This unit is written with CUDA-C and shall be compiled using nvcc in cuda-toolki
 #include "mcx_const.h"
 
 #include <cuda.h>
+#include <cuComplex.h>
 #include "cuda_fp16.h"
 
 #ifdef USE_DOUBLE
@@ -398,7 +399,7 @@ __device__ void jones_to_mueller(float2 m1, float2 m2, float2 m3, float2 m4, flo
     float G34 = m3.y * m2.x - m3.x * m2.y;
     float G42 = m2.y * m4.x - m2.x * m4.y;
     
-    // Construct Mueller matrix according to Eq. A4.13
+    // Construct Mueller matrix
     M[0]  = 0.5f * (E1 + E2 + E3 + E4);
     M[1]  = 0.5f * (E1 - E2 + E3 - E4);
     M[2]  = F14 + F32;
@@ -483,23 +484,23 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
         float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
 
         // Calculate Qn
-        float2 Q_N = csqrtf(-g0*g0 - chi*chi);  // This works when LB/CB are the only effects considered
+        float2 Q_N = cuCsqrtf(-g0*g0 - chi*chi);  // This works when LB/CB are the only effects considered
 
         // Calculate M-matrix elements
         float2 m1, m2, m3, m4;  
         
         if (cabsf(Q_N) > 1e-6f) {
-            float2 sinh_QNs = csinhf(csmulf(Q_N, len));
-            float2 cosh_QNs = ccoshf(csmulf(Q_N, len));
-            float2 factor = cdivf(sinh_QNs, Q_N);
+            float2 sinh_QNs = cuCsinhf(cuCmulf(Q_N, len));
+            float2 cosh_QNs = cuCcoshf(cuCmulf(Q_N, len));
+            float2 factor = cuCdivf(sinh_QNs, Q_N);
 
-            m1 = caddf(csmulf(make_float2(0.0f, g0), factor), cosh_QNs);
-            m2 = csubf(cosh_QNs, csmulf(make_float2(0.0f, g0), factor));
-            m3 = cmulf(make_float2(chi, 0.0f), factor);
-            m4 = cmulf(make_float2(-chi, 0.0f), factor);
+            m1 = cuCaddf(cuCmulf(make_float2(0.0f, g0), factor), cosh_QNs);
+            m2 = cuCsubf(cosh_QNs, cuCmulf(make_float2(0.0f, g0), factor));
+            m3 = cuCmulf(make_float2(chi, 0.0f), factor);
+            m4 = cuCmulf(make_float2(-chi, 0.0f), factor);
         } else {
             // For very small Q_N, use Taylor expansion to avoid division by zero
-            float QNs = cabsf(Q_N) * len;
+            float QNs = cuCabsf(Q_N) * len;
             float QNs_sq = QNs * QNs;
             float factor = len * (1.0f - QNs_sq / 6.0f);
 
@@ -2247,7 +2248,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
         /** NEW - Apply birefringence effects to the photon based on distance travelled */
         if (ispolarized) {
-            apply_N_matrix(len, prop.n, mediaid, gcfg->lambda, &v, &s);
+            apply_N_matrix(len, prop.n, mediaid, gcfg->lambda, (float3*)&v, &s);
         }
 
         /** although the below 3 lines look dumb, if you change it to flipdir[flipdir[3]] += ..., the speed drops by half, likely due to step locking */
@@ -2974,7 +2975,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
     if (param.isatomic) {
         param.skipradius2 = 0.f;
-
+    }
     /** Start multiple CPU threads using OpenMP, one thread for each GPU device to run simultaneously, \c threadid returns the current thread ID */
 #ifdef _OPENMP
     threadid = omp_get_thread_num();
