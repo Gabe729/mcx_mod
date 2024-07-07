@@ -50,7 +50,6 @@ This unit is written with CUDA-C and shall be compiled using nvcc in cuda-toolki
 #include "mcx_const.h"
 
 #include <cuda.h>
-#include <cuComplex.h>
 #include "cuda_fp16.h"
 
 #ifdef USE_DOUBLE
@@ -181,6 +180,49 @@ __device__ float3 normalize(const float3& v) {
     float invLen = rsqrtf(dot(v, v));
     return make_float3(v.x * invLen, v.y * invLen, v.z * invLen);
 }
+
+// Complex number operations
+__device__ inline float2 complex_mul(const float2& a, const float2& b) {
+    return make_float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+__device__ inline float2 complex_div(const float2& a, const float2& b) {
+    float denom = b.x * b.x + b.y * b.y;
+    return make_float2((a.x * b.x + a.y * b.y) / denom, (a.y * b.x - a.x * b.y) / denom);
+}
+
+__device__ inline float2 complex_sqrt(const float2& z) {
+    float r = sqrtf(z.x * z.x + z.y * z.y);
+    float theta = atan2f(z.y, z.x);
+    float root_r = sqrtf(r);
+    float half_theta = theta / 2.0f;
+    return make_float2(root_r * cosf(half_theta), root_r * sinf(half_theta));
+}
+
+__device__ inline float2 complex_sinh(const float2& z) {
+    return make_float2(sinhf(z.x) * cosf(z.y), coshf(z.x) * sinf(z.y));
+}
+
+__device__ inline float2 complex_cosh(const float2& z) {
+    return make_float2(coshf(z.x) * cosf(z.y), sinhf(z.x) * sinf(z.y));
+}
+
+__device__ inline float complex_abs(const float2& z) {
+    return sqrtf(z.x * z.x + z.y * z.y);
+}
+
+__device__ inline float2 complex_scalar_mul(const float2& z, const float& s) {
+    return make_float2(z.x * s, z.y * s);
+}
+
+__device__ inline float2 complex_add(const float2& a, const float2& b) {
+    return make_float2(a.x + b.x, a.y + b.y);
+}
+
+__device__ inline float2 complex_sub(const float2& a, const float2& b) {
+    return make_float2(a.x - b.x, a.y - b.y);
+}
+
 
 /**
  * @brief Concatenated optical properties and det positions, stored in constant memory
@@ -484,30 +526,32 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
         float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
 
         // Calculate Qn
-        float2 Q_N = cuCsqrtf(-g0*g0 - chi*chi);  // This works when LB/CB are the only effects considered
+        float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
 
         // Calculate M-matrix elements
         float2 m1, m2, m3, m4;  
         
-        if (cabsf(Q_N) > 1e-6f) {
-            float2 sinh_QNs = cuCsinhf(cuCmulf(Q_N, len));
-            float2 cosh_QNs = cuCcoshf(cuCmulf(Q_N, len));
-            float2 factor = cuCdivf(sinh_QNs, Q_N);
+        if (complex_abs(Q_N) > 1e-6f) {
+            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 sinh_QNs = complex_sinh(Q_N_len);
+            float2 cosh_QNs = complex_cosh(Q_N_len);
+            float2 factor = complex_div(sinh_QNs, Q_N);
 
-            m1 = cuCaddf(cuCmulf(make_float2(0.0f, g0), factor), cosh_QNs);
-            m2 = cuCsubf(cosh_QNs, cuCmulf(make_float2(0.0f, g0), factor));
-            m3 = cuCmulf(make_float2(chi, 0.0f), factor);
-            m4 = cuCmulf(make_float2(-chi, 0.0f), factor);
+            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            m1 = complex_add(ig0_factor, cosh_QNs);
+            m2 = complex_sub(cosh_QNs, ig0_factor);
+            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
         } else {
             // For very small Q_N, use Taylor expansion to avoid division by zero
-            float QNs = cuCabsf(Q_N) * len;
+            float QNs = complex_abs(Q_N) * len;
             float QNs_sq = QNs * QNs;
             float factor = len * (1.0f - QNs_sq / 6.0f);
 
             m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
             m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
             m3 = make_float2(chi * factor, 0.0f);
-            m4 = make_float2(-chi * factor, 0.0f);  // This assumes clockwise rotation is positive - needs to be verified
+            m4 = make_float2(-chi * factor, 0.0f);
         }
 
         // Convert Jones matrix to Mueller matrix
