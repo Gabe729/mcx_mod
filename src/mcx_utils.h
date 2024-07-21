@@ -106,7 +106,9 @@ typedef struct MCXPolarizeMedium {
 typedef struct MCXJonesMedium {
     float ne;                      /**< extraordinary refractive index */
     float chi;                     /**< optical rotation (in deg/mm) */
-    float3 B;                      /**< birefringence extraordinary axis vector */
+    float Bx;                     /**< birefringence extraordinary axis vector, x-component */
+    float By;                     /**< birefringence extraordinary axis vector, y-component */
+    float Bz;                     /**< birefringence extraordinary axis vector, z-component */
 } JonesMedium;
 
 typedef struct  MCXExtraSource {
