@@ -728,7 +728,7 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
         auto buffer_info = f_style_volume.request();
 
         if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 5) || (buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 5)) {
-            throw py::value_error("the 'jonesprop' field must have 2 columns (ne, chi, Bx, By, Bz)");
+            throw py::value_error("the 'jonesprop' field must have 5 columns (ne, chi, Bx, By, Bz)");
         }
 
         mcx_config.medianum = (buffer_info.shape.size() == 1) ? 1 : buffer_info.shape.at(0);

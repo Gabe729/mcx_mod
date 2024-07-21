@@ -425,7 +425,7 @@ def mcxlab(*args):
           or
        res = mcxlab(cfg, option);
 
-    Input:
+    Input
        cfg: a dictionary defining the parameters associated with a simulation.
             if cfg='gpuinfo': return the supported GPUs and their parameters,
             if cfg='version': return the version of MCXLAB as a string,
@@ -523,6 +523,7 @@ def mcxlab(*args):
             "workload",
             "srcdir",
             "srciquv",
+            "jonesprop",    # new
         ]
         for j in range(len(castlist)):
             if castlist[j] in args[0]:
