@@ -508,7 +508,9 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
     
     // Only perform calculations if there is birefringence
     if (fabsf(ne - no) > 1e-6f || fabsf(chi) > 1e-6f) {
-        float3 B = gjonesproperty[mediaid & MED_MASK].d.B;
+        float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
+                               gjonesproperty[mediaid & MED_MASK].By, 
+                               gjonesproperty[mediaid & MED_MASK].Bz);
         
         // Calculate e_parallel and b'
         float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
