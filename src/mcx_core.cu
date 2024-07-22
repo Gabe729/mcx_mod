@@ -503,15 +503,21 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
  */
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
-    float ne = gjonesproperty[mediaid & MED_MASK].ne;
-    float chi = gjonesproperty[mediaid & MED_MASK].chi;
-    
     // Only perform calculations if there is birefringence
-    if (fabsf(ne - no) > 1e-6f || fabsf(chi) > 1e-6f) {
+    if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
+        gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) { 
+
+        float ne = gjonesproperty[mediaid & MED_MASK].ne;
+        float chi = gjonesproperty[mediaid & MED_MASK].chi;
+
         float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
                                gjonesproperty[mediaid & MED_MASK].By, 
                                gjonesproperty[mediaid & MED_MASK].Bz);
-        
+        B = normalize(B);
+
         // Calculate e_parallel and b'
         float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
         float3 e_perp = normalize(cross(*u, z_axis));
