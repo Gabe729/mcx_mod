@@ -504,89 +504,91 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  */
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
     // Only perform calculations if there is birefringence
-    if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
-        gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
-        gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
-        gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
-        gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) { 
+    if (gjonesproperty != NULL) {
+        if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
+            gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
+            gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
+            gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
+            gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) { 
 
-        float ne = gjonesproperty[mediaid & MED_MASK].ne;
-        float chi = gjonesproperty[mediaid & MED_MASK].chi;
+            float ne = gjonesproperty[mediaid & MED_MASK].ne;
+            float chi = gjonesproperty[mediaid & MED_MASK].chi;
 
-        float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
-                               gjonesproperty[mediaid & MED_MASK].By, 
-                               gjonesproperty[mediaid & MED_MASK].Bz);
-        B = normalize(B);
+            float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
+                                gjonesproperty[mediaid & MED_MASK].By, 
+                                gjonesproperty[mediaid & MED_MASK].Bz);
+            B = normalize(B);
 
-        // Calculate e_parallel and b'
-        float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
-        float3 e_perp = normalize(cross(*u, z_axis));
-        float3 e_parallel = cross(*u, e_perp);  // No need to normalize
-        float3 b_prime = normalize(cross(*u, cross(B, *u)));  // Rotated extraordinary axis
+            // Calculate e_parallel and b'
+            float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
+            float3 e_perp = normalize(cross(*u, z_axis));
+            float3 e_parallel = cross(*u, e_perp);  // No need to normalize
+            float3 b_prime = normalize(cross(*u, cross(B, *u)));  // Rotated extraordinary axis
 
-        // Calculate angles
-        float theta = angle_between(B, *u);
-        float beta = angle_between(e_parallel, b_prime, u);
+            // Calculate angles
+            float theta = angle_between(B, *u);
+            float beta = angle_between(e_parallel, b_prime, u);
 
-        // Calculate birefringence parameters
-        float cos_square_theta = cosf(theta) * cosf(theta);
-        float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
-        float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
+            // Calculate birefringence parameters
+            float cos_square_theta = cosf(theta) * cosf(theta);
+            float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
+            float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
 
-        // Calculate Qn
-        float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
+            // Calculate Qn
+            float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
 
-        // Calculate M-matrix elements
-        float2 m1, m2, m3, m4;  
-        
-        if (complex_abs(Q_N) > 1e-6f) {
-            float2 Q_N_len = complex_scalar_mul(Q_N, len);
-            float2 sinh_QNs = complex_sinh(Q_N_len);
-            float2 cosh_QNs = complex_cosh(Q_N_len);
-            float2 factor = complex_div(sinh_QNs, Q_N);
+            // Calculate M-matrix elements
+            float2 m1, m2, m3, m4;  
+            
+            if (complex_abs(Q_N) > 1e-6f) {
+                float2 Q_N_len = complex_scalar_mul(Q_N, len);
+                float2 sinh_QNs = complex_sinh(Q_N_len);
+                float2 cosh_QNs = complex_cosh(Q_N_len);
+                float2 factor = complex_div(sinh_QNs, Q_N);
 
-            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
-            m1 = complex_add(ig0_factor, cosh_QNs);
-            m2 = complex_sub(cosh_QNs, ig0_factor);
-            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
-            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
-        } else {
-            // For very small Q_N, use Taylor expansion to avoid division by zero
-            float QNs = complex_abs(Q_N) * len;
-            float QNs_sq = QNs * QNs;
-            float factor = len * (1.0f - QNs_sq / 6.0f);
+                float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+                m1 = complex_add(ig0_factor, cosh_QNs);
+                m2 = complex_sub(cosh_QNs, ig0_factor);
+                m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+                m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+            } else {
+                // For very small Q_N, use Taylor expansion to avoid division by zero
+                float QNs = complex_abs(Q_N) * len;
+                float QNs_sq = QNs * QNs;
+                float factor = len * (1.0f - QNs_sq / 6.0f);
 
-            m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
-            m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
-            m3 = make_float2(chi * factor, 0.0f);
-            m4 = make_float2(-chi * factor, 0.0f);
-        }
-
-        // Convert Jones matrix to Mueller matrix
-        float M[16];
-        jones_to_mueller(m1, m2, m3, m4, M); 
-
-        // Rotate Stokes vector by beta
-        Stokes s_rotated;
-        rotsphi(s, beta, &s_rotated);   //// Need to check sign convention
-
-        // Apply Mueller matrix to rotated Stokes vector
-        float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
-        float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
-                S_new[i] += M[i*4 + j] * S[j];
+                m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
+                m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
+                m3 = make_float2(chi * factor, 0.0f);
+                m4 = make_float2(-chi * factor, 0.0f);
             }
-        }
 
-        // Rotate Stokes vector back
-        Stokes s_final;
-        s_final.i = S_new[0];
-        s_final.q = S_new[1];
-        s_final.u = S_new[2];
-        s_final.v = S_new[3];
-        rotsphi(&s_final, -beta, s);
+            // Convert Jones matrix to Mueller matrix
+            float M[16];
+            jones_to_mueller(m1, m2, m3, m4, M); 
+
+            // Rotate Stokes vector by beta
+            Stokes s_rotated;
+            rotsphi(s, beta, &s_rotated);   //// Need to check sign convention
+
+            // Apply Mueller matrix to rotated Stokes vector
+            float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
+            float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    S_new[i] += M[i*4 + j] * S[j];
+                }
+            }
+
+            // Rotate Stokes vector back
+            Stokes s_final;
+            s_final.i = S_new[0];
+            s_final.q = S_new[1];
+            s_final.u = S_new[2];
+            s_final.v = S_new[3];
+            rotsphi(&s_final, -beta, s);
+        }
     }
 }
 
@@ -3464,8 +3466,11 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     }
 
     // Allocate and transfer jonesprop data to the GPU device (NEW)
+    // Check if gjonesprop is allocated (meaning jonesprop was provided)
+    if (cfg->jonesprop) {
     CUDA_ASSERT(cudaMemcpyToSymbol(gjonesproperty, cfg->jonesprop, cfg->medianum * sizeof(JonesMedium), 0, cudaMemcpyHostToDevice));
-
+    }
+        
     MCX_FPRINTF(cfg->flog, "init complete : %d ms\n", GetTimeMillis() - tic);
 
     /**
