@@ -3726,18 +3726,6 @@ void mcx_validatecfg(Config* cfg, float* detps, int dimdetps[2], int seedbyte) {
         MCX_ERROR(-6, "field 'srcdir' must be a unitary vector");
     }
 
-    // Check if B is a unit vector for each medium in jonesprop
-    if (cfg->jonesprop) {
-        for (int i = 0; i < cfg->medianum; i++) {
-            float Bx = cfg->jonesprop[i].Bx;
-            float By = cfg->jonesprop[i].By; 
-            float Bz = cfg->jonesprop[i].Bz; 
-            if (ABS(Bx * Bx + By * By + Bz * Bz - 1.f) > 1e-5) { 
-                MCX_ERROR(-6, "The birefringence axis vector (Bx, By, Bz) must be a unit vector for each medium.");
-            }
-        }
-    }
-
     if (cfg->steps.x == 0.f || cfg->steps.y == 0.f || cfg->steps.z == 0.f) {
         MCX_ERROR(-6, "field 'steps' can not have zero elements");
     }
