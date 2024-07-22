@@ -383,6 +383,7 @@ void mcx_cleargpuinfo(GPUInfo** gpuinfo) {
 void mcx_clearcfg(Config* cfg) {
     if (cfg->medianum) {
         free(cfg->prop);
+        free(cfg->jonesprop);
     }
 
     if (cfg->polmedianum) {
