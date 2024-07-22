@@ -120,12 +120,6 @@ typedef union  __align__(16) GProperty {
     float  f[4];
 } Gprop;
 
-typedef union  __align__(16) GJonesProperty {
-    JonesMedium d; /*defined in mcx_utils.h*/
-    //float5 v;?
-    float  f[5];     /**< (ne, chi, Bx, By, Bz) */
-} Gjonesprop;
-
 typedef struct  __align__(16) MCXSource {
     float4 pos;      /**< initial position vector, for pencil beam */
     float4 dir;      /**< initial directon vector, for pencil beam */
