@@ -536,6 +536,10 @@ def mcxlab(*args):
             ) and "unitinmm" in args[0]:
                 args[0]["vol"] = args[0]["vol"] * args[0]["unitinmm"]
 
+        # Handle missing jonesprop
+        if 'jonesprop' not in args[0]:
+            args[0]['jonesprop'] = None
+
         if "tstart" not in args[0]:
             args[0]["tstart"] = 0
 
