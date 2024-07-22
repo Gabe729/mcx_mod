@@ -244,7 +244,7 @@ __constant__ float4 gproperty[MAX_PROP_AND_DETECTORS];
  * Each element of this array contains the birefringence properties (ne, chi)
  * for a specific medium. The index of the array corresponds to the medium ID.
  */
-__constant__ Gjonesprop gjonesproperty[MAX_PROP_AND_DETECTORS];
+__constant__ JonesMedium gjonesproperty[MAX_PROP_AND_DETECTORS];
 
 
 /**
@@ -503,14 +503,14 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
  */
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
-    float ne = gjonesproperty[mediaid & MED_MASK].d.ne;
-    float chi = gjonesproperty[mediaid & MED_MASK].d.chi;
+    float ne = gjonesproperty[mediaid & MED_MASK].ne;
+    float chi = gjonesproperty[mediaid & MED_MASK].chi;
     
     // Only perform calculations if there is birefringence
     if (fabsf(ne - no) > 1e-6f || fabsf(chi) > 1e-6f) {
-        float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].d.Bx, 
-                               gjonesproperty[mediaid & MED_MASK].d.By, 
-                               gjonesproperty[mediaid & MED_MASK].d.Bz);
+        float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
+                               gjonesproperty[mediaid & MED_MASK].By, 
+                               gjonesproperty[mediaid & MED_MASK].Bz);
         
         // Calculate e_parallel and b'
         float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
@@ -2294,7 +2294,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
         /** NEW - Apply birefringence effects to the photon based on distance travelled */
         if (ispolarized) {
-            apply_N_matrix(len, prop.n, mediaid, gcfg->lambda, (float3*)&v, &s);
+            apply_N_matrix(len, n1, mediaid, gcfg->lambda, (float3*)&v, &s);
         }
 
         /** although the below 3 lines look dumb, if you change it to flipdir[flipdir[3]] += ..., the speed drops by half, likely due to step locking */

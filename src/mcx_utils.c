@@ -1562,6 +1562,8 @@ void mcx_preprocess(Config* cfg) {
         for (int i = 1; i < cfg->medianum; i++) {
             cfg->prop[i].mus *= cfg->unitinmm;
             cfg->prop[i].mua *= cfg->unitinmm;
+            cfg->jonesprop[i].chi *= cfg->unitinmm;
+
         }
     }
 
