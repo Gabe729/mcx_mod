@@ -419,44 +419,45 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
 }
 
 __device__ void jones_to_mueller(float2 m1, float2 m2, float2 m3, float2 m4, float* M) {
+    // m3 <-> m4 are swapped!
     // Calculate E_k = J_k J_k*
     float E1 = m1.x * m1.x + m1.y * m1.y;
-    float E2 = m4.x * m4.x + m4.y * m4.y;
-    float E3 = m3.x * m3.x + m3.y * m3.y;
-    float E4 = m2.x * m2.x + m2.y * m2.y;
+    float E2 = m2.x * m2.x + m2.y * m2.y;
+    float E3 = m4.x * m4.x + m4.y * m4.y;
+    float E4 = m3.x * m3.x + m3.y * m3.y;
     
     // Calculate F_kl = Re(J_k J_l*)
-    float F12 = m1.x * m4.x + m1.y * m4.y;
-    float F13 = m1.x * m3.x + m1.y * m3.y;
-    float F14 = m1.x * m2.x + m1.y * m2.y;
-    float F32 = m3.x * m4.x + m3.y * m4.y;
-    float F34 = m3.x * m2.x + m3.y * m2.y;
-    float F42 = m2.x * m4.x + m2.y * m4.y;
+    float F12 = m1.x * m2.x + m1.y * m2.y;
+    float F13 = m1.x * m4.x + m1.y * m4.y;
+    float F14 = m1.x * m3.x + m1.y * m3.y;
+    float F32 = m4.x * m2.x + m4.y * m2.y;
+    float F34 = m4.x * m3.x + m4.y * m3.y;
+    float F42 = m3.x * m2.x + m3.y * m2.y;
     
     // Calculate G_kl = -Im(J_k J_l*)
-    float G12 = m1.y * m4.x - m1.x * m4.y;
-    float G13 = m1.y * m3.x - m1.x * m3.y;
-    float G14 = m1.y * m2.x - m1.x * m2.y;
-    float G32 = m3.y * m4.x - m3.x * m4.y;
-    float G34 = m3.y * m2.x - m3.x * m2.y;
-    float G42 = m2.y * m4.x - m2.x * m4.y;
+    float G12 = m1.x * m2.y - m1.y * m2.x;
+    float G13 = m1.x * m4.y - m1.y * m4.x;  
+    float G14 = m1.x * m3.y - m1.y * m3.x; 
+    float G32 = m4.x * m2.y - m4.y * m2.x;  
+    float G34 = m4.x * m3.y - m4.y * m3.x;  
+    float G42 = m3.x * m2.y - m3.y * m2.x;
     
-    // Construct Mueller matrix
+    // Row-major order
     M[0]  = 0.5f * (E1 + E2 + E3 + E4);
-    M[1]  = 0.5f * (E1 - E2 + E3 - E4);
-    M[2]  = F14 + F32;
-    M[3]  = G14 + G32;
-    M[4]  = 0.5f * (E1 - E2 - E3 + E4);
+    M[1]  = 0.5f * (E1 - E2 - E3 + E4);
+    M[2]  = F13 + F42;
+    M[3]  = -G13 - G42;
+    M[4]  = 0.5f * (E1 - E2 + E3 - E4);
     M[5]  = 0.5f * (E1 + E2 - E3 - E4);
-    M[6]  = F14 - F32;
-    M[7]  = G14 - G32;
-    M[8]  = F13 + F42;
-    M[9]  = F13 - F42;
+    M[6]  = F13 - F42;
+    M[7]  = -G13 + G42;
+    M[8]  = F14 + F32;
+    M[9]  = F14 - F32;
     M[10] = F12 + F34;
-    M[11] = G12 + G34;
-    M[12] = -G13 - G42;
-    M[13] = -G13 + G42;
-    M[14] = -G12 + G34;
+    M[11] = -G12 + G34;
+    M[12] = G14 + G32;
+    M[13] = G14 - G32;
+    M[14] = G12 + G34;
     M[15] = F12 - F34;
 }
 
@@ -504,91 +505,104 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  */
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
     // Only perform calculations if there is birefringence
-    if (gjonesproperty != NULL) {
-        if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
-            gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
-            gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
-            gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
-            gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) { 
+    if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
+        gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) { 
 
-            float ne = gjonesproperty[mediaid & MED_MASK].ne;
-            float chi = gjonesproperty[mediaid & MED_MASK].chi;
+        float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
+        float3 e_perp, e_parallel, b_prime; 
+        float3 B = normalize(make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
+                                         gjonesproperty[mediaid & MED_MASK].By, 
+                                         gjonesproperty[mediaid & MED_MASK].Bz));
+        float ne = gjonesproperty[mediaid & MED_MASK].ne;
+        float chi = gjonesproperty[mediaid & MED_MASK].chi * ONE_PI / 180.0f;
+        float theta, beta, g0;
+        B = normalize(B);
 
-            float3 B = make_float3(gjonesproperty[mediaid & MED_MASK].Bx, 
-                                gjonesproperty[mediaid & MED_MASK].By, 
-                                gjonesproperty[mediaid & MED_MASK].Bz);
-            B = normalize(B);
+        // Edge case 1: u is aligned with z-axis
+        // In this case, it's not clear how to determine the axes that define the Stokes vector
+        // The x and y axes are chosen arbitrarily. This is not physically accurate,
+        // but this case is so rare that it won't make a difference
+        if (fabsf(dot(*u, z_axis)) > 0.9999f) {
+            e_perp = make_float3(1.0f, 0.0f, 0.0f);
+            e_parallel = make_float3(0.0f, 1.0f, 0.0f);
+        } else {
+            // Normal case
+            e_perp = normalize(cross(*u, z_axis));
+            e_parallel = cross(*u, e_perp); 
+        }
 
-            // Calculate e_parallel and b'
-            float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
-            float3 e_perp = normalize(cross(*u, z_axis));
-            float3 e_parallel = cross(*u, e_perp);  // No need to normalize
-            float3 b_prime = normalize(cross(*u, cross(B, *u)));  // Rotated extraordinary axis
-
-            // Calculate angles
-            float theta = angle_between(B, *u);
-            float beta = angle_between(e_parallel, b_prime, u);
-
-            // Calculate birefringence parameters
+        // Normal case: u and B are different
+        if (fabsf(dot(*u, B)) <= 0.9999f) {
+            b_prime = normalize(cross(*u, cross(B, *u)));
+            theta = angle_between(B, *u, NULL);
+            beta = angle_between(e_parallel, b_prime, u);
             float cos_square_theta = cosf(theta) * cosf(theta);
             float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
-            float g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
-
-            // Calculate Qn
-            float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
-
-            // Calculate M-matrix elements
-            float2 m1, m2, m3, m4;  
-            
-            if (complex_abs(Q_N) > 1e-6f) {
-                float2 Q_N_len = complex_scalar_mul(Q_N, len);
-                float2 sinh_QNs = complex_sinh(Q_N_len);
-                float2 cosh_QNs = complex_cosh(Q_N_len);
-                float2 factor = complex_div(sinh_QNs, Q_N);
-
-                float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
-                m1 = complex_add(ig0_factor, cosh_QNs);
-                m2 = complex_sub(cosh_QNs, ig0_factor);
-                m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
-                m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
-            } else {
-                // For very small Q_N, use Taylor expansion to avoid division by zero
-                float QNs = complex_abs(Q_N) * len;
-                float QNs_sq = QNs * QNs;
-                float factor = len * (1.0f - QNs_sq / 6.0f);
-
-                m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
-                m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
-                m3 = make_float2(chi * factor, 0.0f);
-                m4 = make_float2(-chi * factor, 0.0f);
-            }
-
-            // Convert Jones matrix to Mueller matrix
-            float M[16];
-            jones_to_mueller(m1, m2, m3, m4, M); 
-
-            // Rotate Stokes vector by beta
-            Stokes s_rotated;
-            rotsphi(s, beta, &s_rotated);   //// Need to check sign convention
-
-            // Apply Mueller matrix to rotated Stokes vector
-            float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
-            float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    S_new[i] += M[i*4 + j] * S[j];
-                }
-            }
-
-            // Rotate Stokes vector back
-            Stokes s_final;
-            s_final.i = S_new[0];
-            s_final.q = S_new[1];
-            s_final.u = S_new[2];
-            s_final.v = S_new[3];
-            rotsphi(&s_final, -beta, s);
+            g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
+        } else {
+            // Edge case 2: no birefringence
+            theta = 0.0f;
+            beta = 0.0f;
+            g0 = 0.0f;
         }
+
+        // Calculate Qn
+        float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
+
+        // Calculate M-matrix elements
+        float2 m1, m2, m3, m4;  
+        
+        if (complex_abs(Q_N) > 1e-6f) {
+            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 sinh_QNs = complex_sinh(Q_N_len);
+            float2 cosh_QNs = complex_cosh(Q_N_len);
+            float2 factor = complex_div(sinh_QNs, Q_N);
+
+            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            m1 = complex_add(ig0_factor, cosh_QNs);
+            m2 = complex_sub(cosh_QNs, ig0_factor);
+            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+        } else {
+            // For very small Q_N, use Taylor expansion to avoid division by zero
+            float QNs = complex_abs(Q_N) * len;
+            float QNs_sq = QNs * QNs;
+            float factor = len * (1.0f - QNs_sq / 6.0f);
+
+            m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
+            m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
+            m3 = make_float2(chi * factor, 0.0f);
+            m4 = make_float2(-chi * factor, 0.0f);
+        }
+
+        // Convert Jones matrix to Mueller matrix
+        float M[16];
+        jones_to_mueller(m1, m2, m3, m4, M); 
+
+        // Rotate Stokes vector by beta
+        Stokes s_rotated;
+        rotsphi(s, beta, &s_rotated); 
+
+        // Apply Mueller matrix to rotated Stokes vector
+        float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
+        float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                S_new[i] += M[i*4 + j] * S[j];
+            }
+        }
+
+        // Rotate Stokes vector back
+        Stokes s_final;
+        s_final.i = S_new[0];
+        s_final.q = S_new[1];
+        s_final.u = S_new[2];
+        s_final.v = S_new[3];
+        rotsphi(&s_final, -beta, s);
     }
 }
 
