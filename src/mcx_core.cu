@@ -598,10 +598,10 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
 
         // Rotate Stokes vector back
         Stokes s_final;
-        s_final.i = S_new[0];
-        s_final.q = S_new[1];
-        s_final.u = S_new[2];
-        s_final.v = S_new[3];
+        s_final.i = 1.0f;
+        s_final.q = S_new[1] / S_new[0];
+        s_final.u = S_new[2] / S_new[0];
+        s_final.v = S_new[3] / S_new[0];
         rotsphi(&s_final, -beta, s);
     }
 }
