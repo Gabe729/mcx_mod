@@ -519,7 +519,6 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
         float ne = gjonesproperty[mediaid & MED_MASK].ne;
         float chi = gjonesproperty[mediaid & MED_MASK].chi * ONE_PI / 180.0f;
         float theta, beta, g0;
-        B = normalize(B);
 
         // Edge case 1: u is aligned with z-axis
         // In this case, it's not clear how to determine the axes that define the Stokes vector
@@ -544,7 +543,6 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
             g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
         } else {
             // Edge case 2: no birefringence
-            theta = 0.0f;
             beta = 0.0f;
             g0 = 0.0f;
         }
@@ -568,14 +566,17 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
             m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
         } else {
             // For very small Q_N, use Taylor expansion to avoid division by zero
-            float QNs = complex_abs(Q_N) * len;
-            float QNs_sq = QNs * QNs;
-            float factor = len * (1.0f - QNs_sq / 6.0f);
-
-            m1 = make_float2(1.0f + QNs_sq / 2.0f, g0 * factor);
-            m2 = make_float2(1.0f + QNs_sq / 2.0f, -g0 * factor);
-            m3 = make_float2(chi * factor, 0.0f);
-            m4 = make_float2(-chi * factor, 0.0f);
+            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 Q_N_len_sq = complex_mul(Q_N_len, Q_N_len);
+            float2 factor = complex_sub(make_float2(len, 0.0f), complex_scalar_mul(Q_N_len_sq, 1.0f / 6.0f));   // third order
+            
+            float2 cosh_approx = complex_add(make_float2(1.0f, 0.0f), complex_scalar_mul(Q_N_len_sq, 0.5f));    // second order
+            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            
+            m1 = complex_add(cosh_approx, ig0_factor);
+            m2 = complex_sub(cosh_approx, ig0_factor);
+            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
         }
 
         // Convert Jones matrix to Mueller matrix
