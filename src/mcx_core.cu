@@ -193,10 +193,9 @@ __device__ inline float2 complex_div(const float2& a, const float2& b) {
 
 __device__ inline float2 complex_sqrt(const float2& z) {
     float r = sqrtf(z.x * z.x + z.y * z.y);
-    float theta = atan2f(z.y, z.x);
-    float root_r = sqrtf(r);
-    float half_theta = theta / 2.0f;
-    return make_float2(root_r * cosf(half_theta), root_r * sinf(half_theta));
+    float half_theta = atan2f(z.y, z.x) / 2.0f;
+    float sqrt_r = sqrtf(r);
+    return make_float2(sqrt_r * cosf(half_theta), sqrt_r * sinf(half_theta));
 }
 
 __device__ inline float2 complex_sinh(const float2& z) {
