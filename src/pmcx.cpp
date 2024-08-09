@@ -719,31 +719,35 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
 
     // Added logic to handle the 'jonesprop' field used to store birefringence properties
     if (user_cfg.contains("jonesprop")) {
-        auto f_style_volume = py::array_t<float, py::array::f_style | py::array::forcecast>::ensure(user_cfg["jonesprop"]);
+        if (user_cfg["jonesprop"].is_none()) {
+            mcx_config.jonesprop = nullptr;
+        } else {
+            auto f_style_volume = py::array_t<float, py::array::f_style | py::array::forcecast>::ensure(user_cfg["jonesprop"]);
 
-        if (!f_style_volume) {
-            throw py::value_error("Invalid jonesprop field value");
-        }
-
-        auto buffer_info = f_style_volume.request();
-
-        if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 5) || (buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 5)) {
-            throw py::value_error("the 'jonesprop' field must have 5 columns (ne, chi, Bx, By, Bz)");
-        }
-
-        mcx_config.medianum = (buffer_info.shape.size() == 1) ? 1 : buffer_info.shape.at(0);
-
-        if (mcx_config.jonesprop) {
-            free(mcx_config.jonesprop);
-        }
-
-        mcx_config.jonesprop = (JonesMedium*)malloc(mcx_config.medianum * sizeof(JonesMedium));     // JonesMedium defined in mcx_utils.h
-        auto val = static_cast<float*>(buffer_info.ptr);
-
-        for (int j = 0; j < 5; j++)
-            for (int i = 0; i < mcx_config.medianum; i++) {
-                ((float*)(&mcx_config.jonesprop[i]))[j] = val[j * mcx_config.medianum + i];
+            if (!f_style_volume) {
+                throw py::value_error("Invalid jonesprop field value");
             }
+
+            auto buffer_info = f_style_volume.request();
+
+            if ((buffer_info.shape.size() > 1 && buffer_info.shape.at(0) > 0 && buffer_info.shape.at(1) != 5) || (buffer_info.shape.size() == 1 && buffer_info.shape.at(0) != 5)) {
+                throw py::value_error("the 'jonesprop' field must have 5 columns (ne, chi, Bx, By, Bz)");
+            }
+
+            mcx_config.medianum = (buffer_info.shape.size() == 1) ? 1 : buffer_info.shape.at(0);
+
+            if (mcx_config.jonesprop) {
+                free(mcx_config.jonesprop);
+            }
+
+            mcx_config.jonesprop = (JonesMedium*)malloc(mcx_config.medianum * sizeof(JonesMedium));     // JonesMedium defined in mcx_utils.h
+            auto val = static_cast<float*>(buffer_info.ptr);
+
+            for (int j = 0; j < 5; j++)
+                for (int i = 0; i < mcx_config.medianum; i++) {
+                    ((float*)(&mcx_config.jonesprop[i]))[j] = val[j * mcx_config.medianum + i];
+                }
+        }
     }
 
     if (user_cfg.contains("session")) {
