@@ -3481,8 +3481,8 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
     // Allocate and transfer jonesprop data to the GPU device (NEW)
     // Check if gjonesprop is allocated (meaning jonesprop was provided)
-    if (cfg->jonesprop) {
-    CUDA_ASSERT(cudaMemcpyToSymbol(gjonesproperty, cfg->jonesprop, cfg->medianum * sizeof(JonesMedium), 0, cudaMemcpyHostToDevice));
+    if (cfg->jonesprop != NULL) {
+        CUDA_ASSERT(cudaMemcpyToSymbol(gjonesproperty, cfg->jonesprop, cfg->medianum * sizeof(JonesMedium), 0, cudaMemcpyHostToDevice));
     }
         
     MCX_FPRINTF(cfg->flog, "init complete : %d ms\n", GetTimeMillis() - tic);
