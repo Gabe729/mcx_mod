@@ -4228,6 +4228,10 @@ is more than what your have specified (%d), please use the -H option to specify 
         CUDA_ASSERT(cudaFree(gsmatrix));
     }
 
+    if (cfg->jonesprop) { 
+        CUDA_ASSERT(cudaFree(gjonesproperty));
+    }
+
     if (cfg->debuglevel & (MCX_DEBUG_MOVE | MCX_DEBUG_MOVE_ONLY)) {
         CUDA_ASSERT(cudaFree(gdebugdata));
     }
