@@ -739,7 +739,6 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
 
         if (mcx_config.jonesprop) {
             free(mcx_config.jonesprop);
-            mcx_config.jonesprop = nullptr;
         }
 
         mcx_config.jonesprop = (JonesMedium*) malloc(mcx_config.medianum * sizeof(JonesMedium));
@@ -749,8 +748,6 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
             for (int i = 0; i < mcx_config.medianum; i++) {
                 ((float*) (&mcx_config.jonesprop[i]))[j] = val[j * mcx_config.medianum + i];
             }
-    } else {
-        mcx_config.jonesprop = nullptr;
     }
 
     if (user_cfg.contains("session")) {
