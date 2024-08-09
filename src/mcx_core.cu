@@ -491,7 +491,7 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
 /**
  * @brief Update Stokes vector in between scattering events to model arbitrary polarization effects.
  * 
- * This function calculates the retardation due to birefringence and optical rotation
+ * This function calculates the retardation and optical rotation due to birefringence
  * and applies it to the photon's Stokes vector using the Jones N-matrix formalism. 
  * The function can be modified to model other effects (e.g. dichroism).
  *
@@ -503,7 +503,7 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
  */
 __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
-    // Only perform calculations if there is birefringence
+    // Only perform calculations if the medium exhibits these polarization effects
     if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
         gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
         gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
@@ -541,7 +541,7 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
             float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
             g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
         } else {
-            // Edge case 2: no birefringence
+            // Edge case 2: u and B aligned, no birefringence
             beta = 0.0f;
             g0 = 0.0f;
         }
@@ -1970,7 +1970,7 @@ __global__ void mcx_test_rng(float field[], uint n_seed[]) {
  * @param[in,out] gprogress: pointer to the host variable to update progress bar
  */
 
-template <const int ispencil, const int isreflect, const int islabel, const int issvmc, const int ispolarized>
+template <const int ispencil, const int isreflect, const int islabel, const int issvmc, const int ispolarized, const int isjonespolarized>
 __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[], uint n_seed[],
                               float4 n_pos[], float4 n_dir[], float4 n_len[], float n_det[], uint detectedphoton[],
                               float srcpattern[], float replayweight[], float photontof[], int photondetid[],
@@ -2315,7 +2315,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
         *((float3*)(&p)) = float3(p.x + len * v.x, p.y + len * v.y, p.z + len * v.z);
 
         /** NEW - Apply birefringence effects to the photon based on distance travelled */
-        if (ispolarized) {
+        if (isjonespolarized) {
             apply_N_matrix(len, n1, mediaid, gcfg->lambda, (float3*)&v, &s);
         }
 
@@ -3586,6 +3586,9 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
             /** \c ispolarized: template constant, if 1, perform polarized light simulations, currently only supports label-based media */
             int ispolarized = (cfg->mediabyte <= 4) && (cfg->polmedianum > 0);
+            
+            /** \c isjonespolarized: template constant, if 1, enable additional polarization effects, ispolarized must also be 1 */
+            int isjonespolarized = (ispolarized) && (cfg->jonesprop != NULL);
 
             /** Enable reflection flag when c or m flags are used in the cfg.bc boundary condition flags */
             for (i = 0; i < 6; i++)
@@ -3594,90 +3597,111 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                 }
 
             /**
-             * Launch GPU kernel using template constants. Here, the compiler will create 2^4=16 individually compiled
+             * Launch GPU kernel using template constants. Here, the compiler will create 2^4 + 4 = 20 individually compiled
              * kernel PTX binaries for each combination of template variables. This creates bigger binary and slower
              * compilation time, but brings up to 20%-30% speed improvement on certain simulations.
              */
-            switch (ispencil * 10000 + (isref > 0) * 1000 + (cfg->mediabyte <= 4) * 100 + issvmc * 10 + ispolarized) {
+            switch (ispencil * 100000 + (isref > 0) * 10000 + (cfg->mediabyte <= 4) * 1000 + issvmc * 100 + ispolarized * 10 + isjonespolarized) {
                 case 0:
-                    mcx_main_loop<0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    mcx_main_loop<0, 0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 88 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 10:
-                    mcx_main_loop<0, 0, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 100:
+                    mcx_main_loop<0, 0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 112 registers, 464 bytes cmem[0], 348 bytes cmem[2]
-                case 100:
-                    mcx_main_loop<0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1000:
+                    mcx_main_loop<0, 0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 92 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 101:
-                    mcx_main_loop<0, 0, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1010:
+                    mcx_main_loop<0, 0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 328 bytes cmem[2]
-                case 1000:
-                    mcx_main_loop<0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1011:
+                    mcx_main_loop<0, 0, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 10000:
+                    mcx_main_loop<0, 1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 1010:
-                    mcx_main_loop<0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 10100:
+                    mcx_main_loop<0, 1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 130 registers, 464 bytes cmem[0], 432 bytes cmem[2]
-                case 1100:
-                    mcx_main_loop<0, 1, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 11000:
+                    mcx_main_loop<0, 1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 1101:
-                    mcx_main_loop<0, 1, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 11010:
+                    mcx_main_loop<0, 1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
-                // Used 96 registers, 464 bytes cmem[0], 328 bytes cmem[2]
-                case 10000:
-                    mcx_main_loop<1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
+                case 11011:
+                    mcx_main_loop<0, 1, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 100000:
+                    mcx_main_loop<1, 0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 70 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 10010:
-                    mcx_main_loop<1, 0, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 100100:
+                    mcx_main_loop<1, 0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 80 registers, 464 bytes cmem[0], 68 bytes cmem[2]
-                case 10100:
-                    mcx_main_loop<1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101000:
+                    mcx_main_loop<1, 0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 64 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 10101:
-                    mcx_main_loop<1, 0, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101010:
+                    mcx_main_loop<1, 0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 52 bytes cmem[2]
-                case 11000:
-                    mcx_main_loop<1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101011:
+                    mcx_main_loop<1, 0, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 110000:
+                    mcx_main_loop<1, 1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 11010:
-                    mcx_main_loop<1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 110100:
+                    mcx_main_loop<1, 1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 80 registers, 464 bytes cmem[0], 152 bytes cmem[2]
-                case 11100:
-                    mcx_main_loop<1, 1, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 111000:
+                    mcx_main_loop<1, 1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 11101:
-                    mcx_main_loop<1, 1, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 111010:
+                    mcx_main_loop<1, 1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
-                    // Used 78 registers, 464 bytes cmem[0], 52 bytes cmem[2]
+
+                // Used 78 registers, 464 bytes cmem[0], 52 bytes cmem[2]
+                case 111011:
+                    mcx_main_loop<1, 1, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
             }
 
             #pragma omp master
