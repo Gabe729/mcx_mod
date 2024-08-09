@@ -539,8 +539,6 @@ def mcxlab(*args):
         # Handle missing jonesprop
         if 'jonesprop' not in args[0]:
             args[0]['jonesprop'] = None
-        elif args[0]['jonesprop'] is not None:
-            args[0]['jonesprop'] = np.array(args[0]['jonesprop'], dtype=np.float32)
 
         if "tstart" not in args[0]:
             args[0]["tstart"] = 0
