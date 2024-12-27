@@ -13,7 +13,7 @@ on:
 jobs:
   build_macos_wheels:
     name: Build macOS wheels
-    runs-on: macos-11
+    runs-on: macos-13
     strategy:
       matrix:
         python_version: [ '3.6', '3.7', '3.8', '3.9', '3.10', '3.11', '3.12', 'pypy3.7', 'pypy3.8', 'pypy3.9' ]
@@ -59,7 +59,7 @@ jobs:
           cd pmcx/
           python -m pip install --upgrade pip
           pip install wheel setuptools
-          VERBOSE=1 pip wheel . -w ../dist/
+          VERBOSE=1 pip wheel . -w ../dist/ --verbose
           ls ../dist/
           cd ../
       - name: Check If the Build Version Exists on PyPI

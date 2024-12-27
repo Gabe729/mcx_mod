@@ -62,6 +62,7 @@ This unit is written with CUDA-C and shall be compiled using nvcc in cuda-toolki
     #define ZERO        0.f
 #endif
 
+
 #if defined(USE_XOROSHIRO128P_RAND)
     #include "mcx_rand_xoroshiro128p.cu" //< Use USE_XOROSHIRO128P_RAND macro to enable xoroshiro128p+ RNG (XORSHIFT128P)
 #elif defined(USE_POSIX_RAND)
@@ -328,7 +329,7 @@ __device__ inline uint finddetector(MCXpos* p0) {
         if ((gproperty[i].x - p0->x) * (gproperty[i].x - p0->x) +
                 (gproperty[i].y - p0->y) * (gproperty[i].y - p0->y) +
                 (gproperty[i].z - p0->z) * (gproperty[i].z - p0->z) < gproperty[i].w * gproperty[i].w) {
-            return i - gcfg->maxmedia;
+            return (gproperty[i].w < 0.f) ? 0 : i - gcfg->maxmedia;
         }
     }
 
@@ -1369,7 +1370,7 @@ __device__ inline int launchnewphoton(MCXpos* p, MCXdir* v, Stokes* s, MCXtime* 
 
                     if (fabsf(oldval) > MAX_ACCUM) {
                         atomicadd(& field[*idx1d + tshift * gcfg->dimlen.z], ((oldval > 0.f) ? -MAX_ACCUM : MAX_ACCUM));
-                        atomicadd(& field[*idx1d + tshift * gcfg->dimlen.z + gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
+                        atomicadd(& field[*idx1d + tshift * gcfg->dimlen.z + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
                     }
 
 #endif
@@ -1387,7 +1388,7 @@ __device__ inline int launchnewphoton(MCXpos* p, MCXdir* v, Stokes* s, MCXtime* 
 
                             if (fabsf(oldval) > MAX_ACCUM) {
                                 atomicadd(& field[(*idx1d + tshift * gcfg->dimlen.z)*gcfg->srcnum + i], ((oldval > 0.f) ? -MAX_ACCUM : MAX_ACCUM));
-                                atomicadd(& field[(*idx1d + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
+                                atomicadd(& field[(*idx1d + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
                             }
 
 #endif
@@ -1537,10 +1538,10 @@ __device__ inline int launchnewphoton(MCXpos* p, MCXdir* v, Stokes* s, MCXtime* 
 
                             p->w = 1.f;
                         }
-                    } else if (gcfg->srctype == MCX_SRC_FOURIER)
+                    } else if (gcfg->srctype == MCX_SRC_FOURIER) {
                         p->w = launchsrc->pos.w * (cosf((floorf(launchsrc->param1.w) * rx + floorf(launchsrc->param2.w) * ry
                                                          + launchsrc->param1.w - floorf(launchsrc->param1.w)) * TWO_PI) * (1.f - launchsrc->param2.w + floorf(launchsrc->param2.w)) + 1.f) * 0.5f; //between 0 and 1
-                    else if (gcfg->srctype == MCX_SRC_PENCILARRAY) {
+                    } else if (gcfg->srctype == MCX_SRC_PENCILARRAY) {
                         p->x = launchsrc->pos.x + floorf(rx * launchsrc->param1.w) * launchsrc->param1.x / (launchsrc->param1.w - 1.f) + floorf(ry * launchsrc->param2.w) * launchsrc->param2.x / (launchsrc->param2.w - 1.f);
                         p->y = launchsrc->pos.y + floorf(rx * launchsrc->param1.w) * launchsrc->param1.y / (launchsrc->param1.w - 1.f) + floorf(ry * launchsrc->param2.w) * launchsrc->param2.y / (launchsrc->param2.w - 1.f);
                         p->z = launchsrc->pos.z + floorf(rx * launchsrc->param1.w) * launchsrc->param1.z / (launchsrc->param1.w - 1.f) + floorf(ry * launchsrc->param2.w) * launchsrc->param2.z / (launchsrc->param2.w - 1.f);
@@ -2248,7 +2249,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
                             if (atomicadd(& field[idx1d + tshift * gcfg->dimlen.z], -oldval) < 0.f) {
                                 atomicadd(& field[idx1d + tshift * gcfg->dimlen.z], oldval);
                             } else {
-                                atomicadd(& field[idx1d + tshift * gcfg->dimlen.z + gcfg->dimlen.w], oldval);
+                                atomicadd(& field[idx1d + tshift * gcfg->dimlen.z + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], oldval);
                             }
                         }
 
@@ -2402,7 +2403,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
                 if (gcfg->outputtype == otEnergy) {
                     weight = w0 - p.w;
                 } else if (gcfg->outputtype == otFluence || gcfg->outputtype == otFlux) {
-                    weight = (prop.mua < 0.001f) ? (w0 * len) : __fdividef(w0 - p.w, prop.mua);   /** when mua->0, take limit_{mua->0} w0*(1-exp(-mua*len))/mua yields w0*len */
+                    weight = (prop.mua < EPS) ? (w0 * len) : __fdividef(w0 - p.w, prop.mua);   /** when mua->0, the first two terms of Taylor expansion of w0*(1-exp(-mua*len))/mua = w0*len - mua*len^2*w0/2 */
                 } else if (gcfg->seed == SEED_FROM_FILE) {
                     if (gcfg->outputtype == otJacobian || gcfg->outputtype == otRF) {
                         weight = replayweight[(idx * gcfg->threadphoton + min(idx, gcfg->oddphotons - 1) + (int)f.ndone)] * f.pathlen;
@@ -2446,11 +2447,11 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
                             if (fabsf(oldval) > MAX_ACCUM && gcfg->outputtype != otRF) {
                                 atomicadd(& field[idx1dold + tshift * gcfg->dimlen.z], ((oldval > 0.f) ? -MAX_ACCUM : MAX_ACCUM));
-                                atomicadd(& field[idx1dold + tshift * gcfg->dimlen.z + gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
-                                GPUDEBUG(("reducing float round-off error by moving %e to [%d], oldval=%f\n", MAX_ACCUM, idx1dold + tshift * gcfg->dimlen.z + gcfg->dimlen.w, oldval));
+                                atomicadd(& field[idx1dold + tshift * gcfg->dimlen.z + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
+                                GPUDEBUG(("reducing float round-off error by moving %e to [%d], oldval=%f\n", MAX_ACCUM, idx1dold + tshift * gcfg->dimlen.z + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w, oldval));
                             } else if (gcfg->outputtype == otRF && gcfg->omega > 0.f) {
                                 oldval = -replayweight[(idx * gcfg->threadphoton + min(idx, gcfg->oddphotons - 1) + (int)f.ndone)] * f.pathlen * ppath[gcfg->w0offset + gcfg->srcnum + 1];
-                                atomicadd(& field[idx1dold + tshift * gcfg->dimlen.z + gcfg->dimlen.w], oldval);
+                                atomicadd(& field[idx1dold + tshift * gcfg->dimlen.z + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], oldval);
                             }
 
 #endif
@@ -2464,10 +2465,10 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
                                     if (fabsf(oldval) > MAX_ACCUM && gcfg->outputtype != otRF) {
                                         atomicadd(& field[(idx1dold + tshift * gcfg->dimlen.z)*gcfg->srcnum + i], ((oldval > 0.f) ? -MAX_ACCUM : MAX_ACCUM));
-                                        atomicadd(& field[(idx1dold + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
+                                        atomicadd(& field[(idx1dold + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], ((oldval > 0.f) ? MAX_ACCUM : -MAX_ACCUM));
                                     } else if (gcfg->outputtype == otRF) {
                                         oldval = p.w * f.pathlen * ppath[gcfg->w0offset + gcfg->srcnum + 1];
-                                        atomicadd(& field[(idx1dold + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + gcfg->dimlen.w], oldval);
+                                        atomicadd(& field[(idx1dold + tshift * gcfg->dimlen.z)*gcfg->srcnum + i + (uint64_t)gcfg->dimlen.z * gcfg->dimlen.w], oldval);
                                     }
 
 #endif
@@ -2628,6 +2629,14 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
                         Rtotal = (Rtotal + (ctheta - stheta) / (ctheta + stheta)) * 0.5f;
                         GPUDEBUG(("Rtotal=%f\n", Rtotal));
                     } //< else, total internal reflection
+
+                    if (gcfg->debuglevel & (MCX_DEBUG_MOVE | MCX_DEBUG_MOVE_ONLY)) {
+                        if (ispolarized && gcfg->istrajstokes) {
+                            savedebugstokes(&p, &s, (uint)f.ndone + idx * gcfg->threadphoton + umin(idx, gcfg->oddphotons), gdebugdata, (int)ppath[gcfg->w0offset - 1]);
+                        } else {
+                            savedebugdata(&p, (uint)f.ndone + idx * gcfg->threadphoton + umin(idx, gcfg->oddphotons), gdebugdata, (int)ppath[gcfg->w0offset - 1]);
+                        }
+                    }
 
                     if (Rtotal < 1.f // if total internal reflection does not happen
                             && (!(mediaid == 0 && ((isdet & 0xF) == bcMirror))) // if out of bbx and cfg.bc is not 'm'
@@ -2826,14 +2835,14 @@ int mcx_list_gpu(Config* cfg, GPUInfo** info) {
     }
 
     if (deviceCount == 0) {
-        MCX_FPRINTF(stderr, S_RED "ERROR: No CUDA-capable GPU device found\n" S_RESET);
+        MCX_FPRINTF(cfg->flog, S_RED "ERROR: No CUDA-capable GPU device found\n" S_RESET);
         return 0;
     }
 
     *info = (GPUInfo*)calloc(deviceCount, sizeof(GPUInfo));
 
     if (cfg->gpuid && cfg->gpuid > deviceCount) {
-        MCX_FPRINTF(stderr, S_RED "ERROR: Specified GPU ID is out of range\n" S_RESET);
+        MCX_FPRINTF(cfg->flog, S_RED "ERROR: Specified GPU ID is out of range\n" S_RESET);
         return 0;
     }
 
@@ -2867,7 +2876,7 @@ int mcx_list_gpu(Config* cfg, GPUInfo** info) {
         (*info)[dev].autoblock = MAX((*info)[dev].maxmpthread / mcx_smxblock(dp.major, dp.minor), 64);
 
         if ((*info)[dev].autoblock == 0) {
-            MCX_FPRINTF(stderr, S_RED "WARNING: maxThreadsPerMultiProcessor can not be detected\n" S_RESET);
+            MCX_FPRINTF(cfg->flog, S_RED "WARNING: maxThreadsPerMultiProcessor can not be detected\n" S_RESET);
             (*info)[dev].autoblock = 64;
         }
 
@@ -2931,7 +2940,8 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     float4 s0 = (float4)cfg->srciquv;
 
     float3 maxidx = float3(cfg->dim.x, cfg->dim.y, cfg->dim.z);
-    int timegate = 0, totalgates, gpuid, threadid = 0;
+    uint timegate = 0, totalgates, threadid = 0;
+    int gpuid;
 
     /** \c gpuphoton - number of photons to be simulated per thread, determined by total workload and thread number */
     size_t gpuphoton = 0;
@@ -2957,7 +2967,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     uint sharedbuf = 0;
 
     /** \c dimxyz - output volume variable \c field voxel count, Nx*Ny*Nz*Ns where Ns=cfg.srcnum is the pattern number for photon sharing */
-    int dimxyz = cfg->dim.x * cfg->dim.y * cfg->dim.z * ((cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) ? cfg->srcnum : (cfg->srcid == -1) ? (cfg->extrasrclen + 1) : 1);
+    size_t dimxyz = cfg->dim.x * cfg->dim.y * cfg->dim.z * ((cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) ? cfg->srcnum : (cfg->srcid == -1) ? (cfg->extrasrclen + 1) : 1);
 
     /** \c media - input volume representing the simulation domain, format specified in cfg.mediaformat, read-only */
     uint*  media = (uint*)(cfg->vol);
@@ -3044,6 +3054,15 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     if (param.isatomic) {
         param.skipradius2 = 0.f;
     }
+
+    if (is2d) {
+        /**
+         *  is2d is only turn 1 if only 1 of the 3 dimension has a length of 1; if 2x or 3x of the dimension have a length of 1, use 3D mode
+         */
+        is2d = is2d * ((cfg->dim.x > 1) + (cfg->dim.y > 1) + (cfg->dim.z > 1) == 2);
+        param.is2d = is2d;
+    }
+
     /** Start multiple CPU threads using OpenMP, one thread for each GPU device to run simultaneously, \c threadid returns the current thread ID */
 #ifdef _OPENMP
     threadid = omp_get_thread_num();
@@ -3065,7 +3084,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
     /** Use the specified GPU's parameters, stored in gpu[gpuid] to determine the maximum time gates that it can hold */
     if (gpu[gpuid].maxgate == 0 && dimxyz > 0) {
-        int needmem = dimxyz + cfg->nthread * sizeof(float4) * 4 + sizeof(float) * cfg->maxdetphoton * hostdetreclen + 10 * 1024 * 1024; /*keep 10M for other things*/
+        size_t needmem = dimxyz + cfg->nthread * sizeof(float4) * 4 + sizeof(float) * cfg->maxdetphoton * hostdetreclen + 10 * 1024 * 1024; /*keep 10M for other things*/
         gpu[gpuid].maxgate = (gpu[gpuid].globalmem - needmem) / (cfg->dim.x * cfg->dim.y * cfg->dim.z);
         gpu[gpuid].maxgate = MIN(((cfg->tend - cfg->tstart) / cfg->tstep + 0.5), gpu[gpuid].maxgate);
     }
@@ -3073,7 +3092,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     /** Updating host simulation configuration \c cfg, only allow the master thread to modify cfg, others are read-only */
     #pragma omp master
     {
-        if (cfg->exportfield == NULL) {
+        if (cfg->exportfield == NULL && cfg->issave2pt) {
             if (cfg->seed == SEED_FROM_FILE && cfg->replaydet == -1) {
                 cfg->exportfield = (float*)calloc(sizeof(float) * dimxyz, gpu[gpuid].maxgate * (1 + (cfg->outputtype == otRF)) * cfg->detnum);
             } else {
@@ -3196,17 +3215,23 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
     /** Here we determine if the GPU memory of the current device can store all time gates, if not, disabling normalization */
     if (totalgates > gpu[gpuid].maxgate && cfg->isnormalized) {
-        MCX_FPRINTF(stderr, S_RED "WARNING: GPU memory can not hold all time gates, disabling normalization to allow multiple runs\n" S_RESET);
+        MCX_FPRINTF(cfg->flog, S_RED "WARNING: %d %d %d [%d %d %d] GPU memory can not hold all time gates, disabling normalization to allow multiple runs\n" S_RESET, totalgates, gpu[gpuid].maxgate, cfg->isnormalized, cfg->dim.x, cfg->dim.y, cfg->dim.z);
         cfg->isnormalized = 0;
     }
 
     #pragma omp barrier
 
+    dimlen.x = cfg->dim.x;
+    dimlen.y = cfg->dim.y * cfg->dim.x;
+    dimlen.z = cfg->dim.x * cfg->dim.y * cfg->dim.z;
+    dimlen.w = gpu[gpuid].maxgate * ((cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) ? cfg->srcnum : (cfg->srcid == -1) ? (cfg->extrasrclen + 1) : 1);
+
     /** Here we decide the total output buffer, field's length. it is Nx*Ny*Nz*Nt*Ns */
     if (cfg->seed == SEED_FROM_FILE && cfg->replaydet == -1) {
-        fieldlen = dimxyz * gpu[gpuid].maxgate * cfg->detnum;
+        dimlen.w *= cfg->detnum;
+        fieldlen = dimlen.z * dimlen.w;
     } else {
-        fieldlen = dimxyz * gpu[gpuid].maxgate;
+        fieldlen = dimlen.z * dimlen.w;
     }
 
     /** A 1D grid is determined by the total thread number and block size */
@@ -3387,7 +3412,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
      * Saving detected photon is enabled by default, but in case if a user disabled this feature, a warning is printed
      */
     if (cfg->issavedet) {
-        MCX_FPRINTF(stderr, S_RED "WARNING: this MCX binary can not save partial path, please recompile mcx and make sure -D SAVE_DETECTORS is used by nvcc\n" S_RESET);
+        MCX_FPRINTF(cfg->flog, S_RED "WARNING: this MCX binary can not save partial path, please recompile mcx and make sure -D SAVE_DETECTORS is used by nvcc\n" S_RESET);
         cfg->issavedet = 0;
     }
 
@@ -3401,11 +3426,6 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     cachebox.x = (cp1.x - cp0.x + 1);
     cachebox.y = (cp1.y - cp0.y + 1) * (cp1.x - cp0.x + 1);
 
-    dimlen.x = cfg->dim.x;
-    dimlen.y = cfg->dim.y * cfg->dim.x;
-    dimlen.z = cfg->dim.x * cfg->dim.y * cfg->dim.z;
-    dimlen.w = fieldlen;
-
     param.dimlen = dimlen;
     param.cachebox = cachebox;
 
@@ -3415,7 +3435,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     if (cfg->seed > 0) {
         srand(cfg->seed + threadid);
     } else {
-        srand(time(0));
+        srand(time(0) + threadid);
     }
 
     for (i = 0; i < gpu[gpuid].autothread; i++) {
@@ -3429,7 +3449,8 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
      */
     tic = StartTimer();
     #pragma omp master
-    {
+
+    if (cfg->printnum >= 0) {
         mcx_printheader(cfg);
 
 #ifdef MCX_TARGET_NAME
@@ -3442,13 +3463,14 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
         MCX_FPRINTF(cfg->flog, "- compiled with: RNG [%s] with Seed Length [%d]\n", MCX_RNG_NAME, (int)((sizeof(RandType)*RAND_BUF_LEN) >> 2));
         fflush(cfg->flog);
     }
+
     #pragma omp barrier
 
     /**
      * Copy all host buffers to the GPU
      */
-    MCX_FPRINTF(cfg->flog, "\nGPU=%d (%s) threadph=%d extra=%d np=%ld nthread=%d maxgate=%d repetition=%d\n", gpuid + 1, gpu[gpuid].name, param.threadphoton, param.oddphotons,
-                gpuphoton, gpu[gpuid].autothread, gpu[gpuid].maxgate, ABS(cfg->respin));
+    MCX_FPRINTF(cfg->flog, "\nGPU=%d (%s) threadph=%d extra=%d np=%.0f nthread=%d maxgate=%d repetition=%d\n", gpuid + 1, gpu[gpuid].name, param.threadphoton, param.oddphotons,
+                (double)gpuphoton, gpu[gpuid].autothread, gpu[gpuid].maxgate, ABS(cfg->respin));
     MCX_FPRINTF(cfg->flog, "initializing streams ...\t");
     fflush(cfg->flog);
 
@@ -3462,12 +3484,13 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 
     CUDA_ASSERT(cudaMemcpy(genergy, energy, sizeof(float) * (gpu[gpuid].autothread << 1), cudaMemcpyHostToDevice));
 
-    if (cfg->srcpattern)
+    if (cfg->srcpattern) {
         if (cfg->srctype == MCX_SRC_PATTERN) {
             CUDA_ASSERT(cudaMemcpy(gsrcpattern, cfg->srcpattern, sizeof(float) * (int)(cfg->srcparam1.w * cfg->srcparam2.w * cfg->srcnum), cudaMemcpyHostToDevice));
         } else if (cfg->srctype == MCX_SRC_PATTERN3D) {
             CUDA_ASSERT(cudaMemcpy(gsrcpattern, cfg->srcpattern, sizeof(float) * (int)(cfg->srcparam1.x * cfg->srcparam1.y * cfg->srcparam1.z * cfg->srcnum), cudaMemcpyHostToDevice));
         }
+    }
 
     /**
      * Copy constants to the constant memory on the GPU
@@ -3825,7 +3848,7 @@ are more than what your have specified (%d), please use the --maxjumpdebug optio
 is more than what your have specified (%d), please use the -H option to specify a greater number\t" S_RESET
                                 , detected, cfg->maxdetphoton);
                 } else {
-                    MCX_FPRINTF(cfg->flog, "detected " S_BOLD "" S_BLUE "%d photons" S_RESET", total: " S_BOLD "" S_BLUE "%ld" S_RESET"\t", detected, cfg->detectedcount + detected);
+                    MCX_FPRINTF(cfg->flog, "detected " S_BOLD "" S_BLUE "%d photons" S_RESET", total: " S_BOLD "" S_BLUE "%.0f" S_RESET"\t", detected, (double)cfg->detectedcount + detected);
                 }
 
                 /**
@@ -3862,6 +3885,7 @@ is more than what your have specified (%d), please use the -H option to specify 
              * Accumulate volumetric fluence from all threads/devices
              */
             if (cfg->issave2pt) {
+                size_t i;
                 OutputType* rawfield = (OutputType*)malloc(sizeof(OutputType) * fieldlen * SHADOWCOUNT);
                 CUDA_ASSERT(cudaMemcpy(rawfield, gfield, sizeof(OutputType)*fieldlen * SHADOWCOUNT, cudaMemcpyDeviceToHost));
                 MCX_FPRINTF(cfg->flog, "transfer complete:\t%d ms\n", GetTimeMillis() - tic);
@@ -3872,7 +3896,7 @@ is more than what your have specified (%d), please use the -H option to specify 
                  * single-precision output, we need to copy and accumulate two separate floating-point buffers
                  * to minimize round-off errors near the source
                  */
-                for (i = 0; i < (int)fieldlen; i++) { //accumulate field, can be done in the GPU
+                for (i = 0; i < fieldlen; i++) { //accumulate field, can be done in the GPU
                     field[i] = rawfield[i];
 #ifndef USE_DOUBLE
 
@@ -3894,7 +3918,7 @@ is more than what your have specified (%d), please use the -H option to specify 
                  * If respin is used, each repeatition is accumulated to the 2nd half of the buffer
                  */
                 if (ABS(cfg->respin) > 1) {
-                    for (i = 0; i < (int)fieldlen; i++) { //accumulate field, can be done in the GPU
+                    for (i = 0; i < fieldlen; i++) { //accumulate field, can be done in the GPU
                         field[fieldlen + i] += field[i];
                     }
                 }
@@ -3934,12 +3958,14 @@ is more than what your have specified (%d), please use the -H option to specify 
          * For MATLAB mex file, the data is copied to a pre-allocated buffer \c cfg->export* as a return variable
          */
         if (cfg->exportfield) {
-            for (i = 0; i < (int)fieldlen; i++)
+            size_t i;
+
+            for (i = 0; i < fieldlen; i++)
                 #pragma omp atomic
                 cfg->exportfield[i] += field[i];
 
             if (cfg->outputtype == otRF && rfimag) {
-                for (i = 0; i < (int)fieldlen; i++)
+                for (i = 0; i < fieldlen; i++)
                     #pragma omp atomic
                     cfg->exportfield[i + fieldlen] += rfimag[i];
             }
@@ -3961,11 +3987,15 @@ is more than what your have specified (%d), please use the -H option to specify 
      */
     #pragma omp master
     {
-        if (cfg->issave2pt && cfg->srctype == MCX_SRC_PATTERN && cfg->srcnum > 1) { // post-processing only for multi-srcpattern
+        if (cfg->issave2pt && (cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) && cfg->srcnum > 1) { // post-processing only for multi-srcpattern
             srcpw = (float*)calloc(cfg->srcnum, sizeof(float));
             energytot = (float*)calloc(cfg->srcnum, sizeof(float));
             energyabs = (float*)calloc(cfg->srcnum, sizeof(float));
             int psize = (int)cfg->srcparam1.w * (int)cfg->srcparam2.w;
+
+            if (cfg->srctype == MCX_SRC_PATTERN3D) {
+                psize = (int)cfg->srcparam1.x * (int)cfg->srcparam1.y * (int)cfg->srcparam1.z;
+            }
 
             for (i = 0; i < int(cfg->srcnum); i++) {
                 float kahanc = 0.f;
@@ -3978,16 +4008,16 @@ is more than what your have specified (%d), please use the -H option to specify 
                 kahanc = 0.f;
 
                 if (cfg->outputtype == otEnergy) {
-                    int fieldlenPsrc = fieldlen / cfg->srcnum;
+                    size_t j, fieldlenPsrc = fieldlen / cfg->srcnum;
 
-                    for (iter = 0; iter < fieldlenPsrc; iter++) {
-                        mcx_kahanSum(&energyabs[i], &kahanc, cfg->exportfield[iter * cfg->srcnum + i]);
+                    for (j = 0; j < fieldlenPsrc; j++) {
+                        mcx_kahanSum(&energyabs[i], &kahanc, cfg->exportfield[j * cfg->srcnum + i]);
                     }
                 } else {
-                    int j;
+                    size_t j;
 
-                    for (iter = 0; iter < gpu[gpuid].maxgate; iter++)
-                        for (j = 0; j < (int)dimlen.z; j++) {
+                    for (iter = 0; iter < (int)gpu[gpuid].maxgate; iter++)
+                        for (j = 0; j < dimlen.z; j++) {
                             mcx_kahanSum(&energyabs[i], &kahanc, cfg->exportfield[iter * dimxyz + (j * cfg->srcnum + i)]*mcx_updatemua((uint)cfg->vol[j], cfg));
                         }
                 }
@@ -4070,9 +4100,13 @@ is more than what your have specified (%d), please use the -H option to specify 
             /**
              * In photon sharing mode, where multiple pattern sources are simulated, each solution is normalized separately
              */
-            if (cfg->srctype == MCX_SRC_PATTERN && cfg->srcnum > 1) { // post-processing only for multi-srcpattern
+            if ((cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) && cfg->srcnum > 1) { // post-processing only for multi-srcpattern
                 float scaleref = scale[0];
                 int psize = (int)cfg->srcparam1.w * (int)cfg->srcparam2.w;
+
+                if (cfg->srctype == MCX_SRC_PATTERN3D) {
+                    psize = (int)cfg->srcparam1.x * (int)cfg->srcparam1.y * (int)cfg->srcparam1.z;
+                }
 
                 for (i = 0; i < int(cfg->srcnum); i++) {
                     scale[i] = psize / srcpw[i] * scaleref;
@@ -4180,13 +4214,13 @@ is more than what your have specified (%d), please use the -H option to specify 
         /**
          * Report simulation summary, total energy here equals total simulated photons+unfinished photons for all threads
          */
-        MCX_FPRINTF(cfg->flog, "simulated %ld photons (%ld) with %d threads (repeat x%d)\nMCX simulation speed: " S_BOLD "" S_BLUE "%.2f photon/ms\n" S_RESET,
-                    (long int)cfg->nphoton * ((cfg->respin > 1) ? (cfg->respin) : 1), (long int)cfg->nphoton * ((cfg->respin > 1) ? (cfg->respin) : 1),
+        MCX_FPRINTF(cfg->flog, "simulated %.0f photons (%.0f) with %d threads (repeat x%d)\nMCX simulation speed: " S_BOLD "" S_BLUE "%.2f photon/ms\n" S_RESET,
+                    (double)cfg->nphoton * ((cfg->respin > 1) ? (cfg->respin) : 1), (double)cfg->nphoton * ((cfg->respin > 1) ? (cfg->respin) : 1),
                     gpu[gpuid].autothread, ABS(cfg->respin),
                     ((cfg->issavedet == FILL_MAXDETPHOTON) ? cfg->energytot : ((double)cfg->nphoton * ((cfg->respin > 1) ? (cfg->respin) : 1))) / max(1, cfg->runtime));
         fflush(cfg->flog);
 
-        if (cfg->srctype == MCX_SRC_PATTERN && cfg->srcnum > 1) {
+        if (cfg->issave2pt && (cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D) && cfg->srcnum > 1) {
             for (i = 0; i < (int)cfg->srcnum; i++) {
                 MCX_FPRINTF(cfg->flog, "source #%d total simulated energy: %.2f\tabsorbed: " S_BOLD "" S_BLUE "%5.5f%%" S_RESET"\n(loss due to initial specular reflection is excluded in the total)\n",
                             i + 1, energytot[i], energyabs[i] / energytot[i] * 100.f);
@@ -4270,6 +4304,13 @@ is more than what your have specified (%d), please use the -H option to specify 
     free(energy);
     free(field);
     free(srcpw);
-    free(energytot);
-    free(energyabs);
+
+    if (energytot) {
+        free(energytot);
+    }
+
+    if (energyabs) {
+        free(energyabs);
+    }
+
 }

@@ -1192,7 +1192,7 @@ void mcx_printlog(Config* cfg, char* str) {
  * @param[in] option: if set to 2, only normalize positive values (negative values for diffuse reflectance calculations)
  */
 
-void mcx_normalize(float field[], float scale, int fieldlen, int option, int pidx, int srcnum) {
+void mcx_normalize(float field[], float scale, size_t fieldlen, int option, int pidx, int srcnum) {
     int i;
 
     for (i = 0; i < fieldlen; i++) {
@@ -1493,6 +1493,11 @@ void mcx_preprocess(Config* cfg) {
     if (cfg->debuglevel & MCX_DEBUG_MOVE_ONLY) {
         cfg->issave2pt = 0;
         cfg->issavedet = 0;
+    }
+
+    if ((cfg->outputtype == otJacobian || cfg->outputtype == otWP || cfg->outputtype == otDCS || cfg->outputtype == otRF)
+            && cfg->seed != SEED_FROM_FILE) {
+        MCX_ERROR(-6, "Jacobian output is only valid in the reply mode. Please define cfg.seed");
     }
 
     // if neither trajectory or polarization is enabled, disable istrajstokes flag
@@ -2856,7 +2861,7 @@ int mcx_loadjson(cJSON* root, Config* cfg) {
                         MCX_ERROR(-1, "Optode.Source.Pattern JData-annotated array must be in the 'single' format");
                     }
 
-                    if (ndim == 3 && dims[2] > 1 && dims[0] > 1 && cfg->srctype == MCX_SRC_PATTERN) {
+                    if (ndim == 3 && dims[2] > 1 && dims[0] > 1 && (cfg->srctype == MCX_SRC_PATTERN || cfg->srctype == MCX_SRC_PATTERN3D)) {
                         cfg->srcnum = dims[0];
                     }
                 } else {
@@ -3526,19 +3531,20 @@ void mcx_loadvolume(char* filename, Config* cfg, int isbuf) {
         for (i = 0; i < datalen; i++) {
             f2h[0] = val[i << (1 + offset)] * cfg->unitinmm;       // mua
             f2h[1] = val[(i << (1 + offset)) + 1] * cfg->unitinmm; // mus
+            cfg->vol[i] = mcx_float2half2(f2h);
 
             if (f2h[0] != f2h[0] || f2h[1] != f2h[1]) { /*if one of mua/mus is nan in continuous medium, convert to 0-voxel*/
                 cfg->vol[i] = 0;
-                continue;
+
+                if (cfg->mediabyte == MEDIA_AS_F2H) {
+                    continue;
+                }
             }
 
             if (cfg->mediabyte == MEDIA_ASGN_F2H) {
-                cfg->vol[i] = mcx_float2half2(f2h);
                 f2h[0] = val[(i << 2) + 2];   // g
                 f2h[1] = val[(i << 2) + 3];   // n
                 cfg->vol[i + datalen] = mcx_float2half2(f2h);
-            } else {
-                cfg->vol[i] = mcx_float2half2(f2h);
             }
         }
     } else if (cfg->mediabyte == MEDIA_2LABEL_SPLIT) {
@@ -3701,6 +3707,10 @@ void mcx_validatecfg(Config* cfg, float* detps, int dimdetps[2], int seedbyte) {
         + SAVE_W0(cfg->savedetflag);
     hostdetreclen += cfg->polmedianum ? (4 * SAVE_IQUV(cfg->savedetflag)) : 0; // for polarized photon simulation
 
+    if (!cfg->issave2pt && cfg->issaveref) {
+        cfg->issaveref = 0;
+    }
+
     if (!cfg->issrcfrom0) {
         cfg->srcpos.x--;
         cfg->srcpos.y--;
@@ -3763,11 +3773,6 @@ void mcx_validatecfg(Config* cfg, float* detps, int dimdetps[2], int seedbyte) {
 
     if (cfg->seed < 0 && cfg->seed != SEED_FROM_FILE) {
         cfg->seed = time(NULL);
-    }
-
-    if ((cfg->outputtype == otJacobian || cfg->outputtype == otWP || cfg->outputtype == otDCS || cfg->outputtype == otRF)
-            && cfg->seed != SEED_FROM_FILE) {
-        MCX_ERROR(-6, "Jacobian output is only valid in the reply mode. Please define cfg.seed");
     }
 
     for (i = 0; i < cfg->detnum; i++) {
@@ -4160,8 +4165,8 @@ int mcx_svmc_bgvoxel(int vol) {
  */
 
 void  mcx_maskdet(Config* cfg) {
-    uint d, dx, dy, dz, idx1d, zi, yi, c, count;
-    float x, y, z, ix, iy, iz, rx, ry, rz, d2, mind2, d2max;
+    uint d, dx, dy, dz, idx1d, zi, yi, c, count, isonecube;
+    float x, y, z, ix, iy, iz, rx, ry, rz, d2, mind2, d2max, radius;
     unsigned int* padvol;
     const float corners[8][3] = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, 0.f, 1.f},
         {1.f, 1.f, 0.f}, {1.f, 0.f, 1.f}, {0.f, 1.f, 1.f}, {1.f, 1.f, 1.f}
@@ -4170,6 +4175,8 @@ void  mcx_maskdet(Config* cfg) {
     dx = cfg->dim.x + 2;
     dy = cfg->dim.y + 2;
     dz = cfg->dim.z + 2;
+
+    isonecube = (cfg->dim.x == 1) && (cfg->dim.y == 1) && (cfg->dim.z == 1);
 
     /*handling boundaries in a volume search is tedious, I first pad vol by a layer of zeros,
       then I don't need to worry about boundaries any more*/
@@ -4182,26 +4189,27 @@ void  mcx_maskdet(Config* cfg) {
         }
 
     /**
-       The goal here is to find a set of voxels for each
-    detector so that the intersection between a sphere
-    of R=cfg->detradius,c0=cfg->detpos[d] and the object
-    surface (or bounding box) is fully covered.
-        */
+     * The goal here is to find a set of voxels for each
+     * detector so that the intersection between a sphere
+     * of R=cfg->detradius,c0=cfg->detpos[d] and the object
+     * surface (or bounding box) is fully covered.
+     */
     for (d = 0; d < cfg->detnum; d++) {                     /*loop over each detector*/
         count = 0;
-        d2max = (cfg->detpos[d].w + 1.7321f) * (cfg->detpos[d].w + 1.7321f);
+        radius = ABS(cfg->detpos[d].w);
+        d2max = (radius + 1.7321f) * (radius + 1.7321f);
 
-        for (z = -cfg->detpos[d].w - 1.f; z <= cfg->detpos[d].w + 1.f; z += 0.5f) { /*search in a cube with edge length 2*R+3*/
+        for (z = -radius - 1.f; z <= radius + 1.f; z += 0.5f) { /*search in a cube with edge length 2*R+3*/
             iz = z + cfg->detpos[d].z;
 
-            for (y = -cfg->detpos[d].w - 1.f; y <= cfg->detpos[d].w + 1.f; y += 0.5f) {
+            for (y = -radius - 1.f; y <= radius + 1.f; y += 0.5f) {
                 iy = y + cfg->detpos[d].y;
 
-                for (x = -cfg->detpos[d].w - 1.f; x <= cfg->detpos[d].w + 1.f; x += 0.5f) {
+                for (x = -radius - 1.f; x <= radius + 1.f; x += 0.5f) {
                     ix = x + cfg->detpos[d].x;
 
                     if (iz < 0 || ix < 0 || iy < 0 || ix >= cfg->dim.x || iy >= cfg->dim.y || iz >= cfg->dim.z ||
-                            x * x + y * y + z * z > (cfg->detpos[d].w + 1.f) * (cfg->detpos[d].w + 1.f)) {
+                            x * x + y * y + z * z > (radius + 1.f) * (radius + 1.f)) {
                         continue;
                     }
 
@@ -4223,7 +4231,7 @@ void  mcx_maskdet(Config* cfg) {
                         }
                     }
 
-                    if (mind2 == VERY_BIG || mind2 >= (cfg->detpos[d].w + 0.5f) * (cfg->detpos[d].w + 0.5f)) {
+                    if (mind2 == VERY_BIG || mind2 >= (radius + 0.5f * (1.f + isonecube)) * (radius + 0.5f * (1.f + isonecube))) {
                         continue;
                     }
 
@@ -4274,6 +4282,14 @@ void  mcx_maskdet(Config* cfg) {
     }
 
     free(padvol);
+
+#ifndef MCX_CONTAINER
+
+    if (cfg->isdumpmask) {
+        mcx_dumpmask(cfg);
+    }
+
+#endif
 }
 
 /**
@@ -4320,6 +4336,7 @@ void mcx_dumpmask(Config* cfg) {
 
     if (cfg->isdumpmask == 1 && cfg->isdumpjson == 0) { /*if dumpmask>1, simulation will also run*/
         MCX_FPRINTF(cfg->flog, "volume mask is saved in %s\n", fname);
+        mcx_clearcfg(cfg);
         exit(0);
     }
 }
@@ -5396,7 +5413,8 @@ int mcx_run_from_json(char* jsonstr) {
  */
 
 void mcx_printheader(Config* cfg) {
-    MCX_FPRINTF(cfg->flog, S_MAGENTA"\
+    if (cfg->printnum >= 0 ) {
+        MCX_FPRINTF(cfg->flog, S_MAGENTA"\
 ###############################################################################\n\
 #                      Monte Carlo eXtreme (MCX) -- CUDA                      #\n\
 #          Copyright (c) 2009-2024 Qianqian Fang <q.fang at neu.edu>          #\n\
@@ -5415,6 +5433,7 @@ void mcx_printheader(Config* cfg) {
 ###############################################################################\n\
 $Rev::      $" S_GREEN MCX_VERSION S_MAGENTA " $Date::                       $ by $Author::             $\n\
 ###############################################################################\n" S_RESET);
+    }
 }
 
 /**
@@ -5463,7 +5482,7 @@ where possible parameters include (the first value in [*|*] is the default)\n\
                                eg: --bc ______010 saves photons exiting at y=0\n\
  -u [1.|float] (--unitinmm)    defines the length unit for the grid edge\n\
  -U [1|0]      (--normalize)   1 to normalize flux to unitary; 0 save raw\n\
- -E [0|int|mch](--seed)        set random-number-generator seed, -1 to generate\n\
+ -E [1648335518|int|mch](--seed) set rand-number-generator seed, -1 to generate\n\
                                if an mch file is followed, MCX \"replays\" \n\
                                the detected photon; the replay mode can be used\n\
                                to calculate the mua/mus Jacobian matrices\n\

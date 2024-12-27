@@ -173,7 +173,7 @@ typedef struct MCXGPUInfo {
     int core;                     /**< number of stream processors */
     int autoblock;                /**< optimized number of blocks to launch */
     int autothread;               /**< optimized number of threads to launch */
-    int maxgate;                  /**< max number of time gates that can be saved in one call */
+    unsigned int maxgate;         /**< max number of time gates that can be saved in one call */
     int maxmpthread;              /**< maximum thread number per multi-processor */
 } GPUInfo;
 
@@ -213,7 +213,7 @@ typedef struct MCXConfig {
 
     unsigned int maxgate;         /**<simultaneous recording gates*/
     int respin;                   /**<number of repeatitions (if positive), or number of divisions (if negative)*/
-    unsigned int printnum;        /**<number of printed threads (for debugging)*/
+    int printnum;                 /**<number of printed threads (for debugging)*/
     int gpuid;                    /**<the ID of the GPU to use, starting from 1, 0 for auto*/
 
     unsigned int* vol;            /**<pointer to the volume*/
@@ -313,7 +313,7 @@ void mcx_parsecmd(int argc, char* argv[], Config* cfg);
 void mcx_usage(Config* cfg, char* exename);
 void mcx_printheader(Config* cfg);
 void mcx_loadvolume(char* filename, Config* cfg, int isbuf);
-void mcx_normalize(float field[], float scale, int fieldlen, int option, int pidx, int srcnum);
+void mcx_normalize(float field[], float scale, size_t fieldlen, int option, int pidx, int srcnum);
 void mcx_kahanSum(float* sum, float* kahanc, float input);
 int  mcx_readarg(int argc, char* argv[], int id, void* output, const char* type);
 void mcx_printlog(Config* cfg, char* str);
@@ -361,9 +361,9 @@ void mcx_python_flush(void);
 
 #if defined(MCX_CONTAINER) && (defined(MATLAB_MEX_FILE) || defined(OCTAVE_API_VERSION_NUMBER))
 #ifdef _OPENMP
-#define MCX_FPRINTF(fp,...) {if(omp_get_thread_num()==0) mexPrintf(__VA_ARGS__);}  /**< macro to print messages, calls mexPrint if inside MATLAB */
+#define MCX_FPRINTF(fp,...) {if(omp_get_thread_num()==0) {(fp==stderr) ? mexPrintf(__VA_ARGS__) : fprintf(fp,__VA_ARGS__);}}  /**< macro to print messages, calls mexPrint if inside MATLAB */
 #else
-#define MCX_FPRINTF(fp,...) mexPrintf(__VA_ARGS__) /**< macro to print messages, calls mexPrint in MATLAB */
+#define MCX_FPRINTF(fp,...) {(fp==stderr) ? mexPrintf(__VA_ARGS__) : fprintf(fp,__VA_ARGS__);} /**< macro to print messages, calls mexPrint in MATLAB */
 #endif
 #else
 #define MCX_FPRINTF(fp,...) fprintf(fp,__VA_ARGS__) /**< macro to print messages, calls fprintf in command line mode */
