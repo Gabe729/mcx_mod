@@ -3049,8 +3049,7 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                       cfg->maxdetphoton * hostdetreclen, cfg->seed, (uint)cfg->outputtype, 0, 0, cfg->faststep,
                       cfg->debuglevel, cfg->savedetflag, hostdetreclen, partialdata, w0offset, cfg->mediabyte,
                       (uint)cfg->maxjumpdebug, cfg->gscatter, is2d, cfg->replaydet, cfg->srcnum,
-                      cfg->nphase, cfg->nphase + (cfg->nphase & 0x1), cfg->nangle, cfg->nangle + (cfg->nangle & 0x1), cfg->omega, cfg->lambda   // Add lambda initialization
-                     };
+                      cfg->nphase, cfg->nphase + (cfg->nphase & 0x1), cfg->nangle, cfg->nangle + (cfg->nangle & 0x1), cfg->omega, cfg->lambda, cfg->unitinmm
 
     if (param.isatomic) {
         param.skipradius2 = 0.f;
