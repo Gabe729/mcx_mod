@@ -503,7 +503,7 @@ __device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
  * @param[in] u: Photon direction vector (float3*).
  * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
  */
-__device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
+__device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float unitinmm, float3* u, Stokes* s) {
     // Only perform calculations if the medium exhibits these polarization effects
     if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f || 
         gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
@@ -552,9 +552,10 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
 
         // Calculate M-matrix elements
         float2 m1, m2, m3, m4;  
+        float len_mm = len * unitinmm;
         
         if (complex_abs(Q_N) > 1e-6f) {
-            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 Q_N_len = complex_scalar_mul(Q_N, len_mm);
             float2 sinh_QNs = complex_sinh(Q_N_len);
             float2 cosh_QNs = complex_cosh(Q_N_len);
             float2 factor = complex_div(sinh_QNs, Q_N);
@@ -566,9 +567,9 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
             m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
         } else {
             // For very small Q_N, use Taylor expansion to avoid division by zero
-            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 Q_N_len = complex_scalar_mul(Q_N, len_mm);
             float2 Q_N_len_sq = complex_mul(Q_N_len, Q_N_len);
-            float2 factor = complex_sub(make_float2(len, 0.0f), complex_scalar_mul(Q_N_len_sq, 1.0f / 6.0f));   // third order
+            float2 factor = complex_sub(make_float2(len_mm, 0.0f), complex_scalar_mul(Q_N_len_sq, 1.0f / 6.0f));   // third order
             
             float2 cosh_approx = complex_add(make_float2(1.0f, 0.0f), complex_scalar_mul(Q_N_len_sq, 0.5f));    // second order
             float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
@@ -2317,7 +2318,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
         /** NEW - Apply birefringence effects to the photon based on distance travelled */
         if (isjonespolarized) {
-            apply_N_matrix(len, n1, mediaid, gcfg->lambda, (float3*)&v, &s);
+            apply_N_matrix(len, n1, mediaid, gcfg->lambda, gcfg->unitinmm, (float3*)&v, &s);
         }
 
         /** although the below 3 lines look dumb, if you change it to flipdir[flipdir[3]] += ..., the speed drops by half, likely due to step locking */
