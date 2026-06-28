@@ -103,6 +103,19 @@ typedef struct MCXPolarizeMedium {
     float nmed;                    /**< background medium refrative index */
 } POLMedium;
 
+/**
+ * This stucture has been added to store medium parameters for
+ * polarized photon simulations involving birefringence.
+ */
+
+typedef struct MCXJonesMedium {
+    float ne;                      /**< extraordinary refractive index */
+    float chi;                     /**< optical rotation (in deg/mm) */
+    float Bx;                     /**< birefringence extraordinary axis vector, x-component */
+    float By;                     /**< birefringence extraordinary axis vector, y-component */
+    float Bz;                     /**< birefringence extraordinary axis vector, z-component */
+} JonesMedium;
+
 typedef struct  MCXExtraSource {
     float4 srcpos;                    /**< initial position vector + initial weight */
     float4 srcdir;                    /**< initial directon vector + focal length */
@@ -199,6 +212,7 @@ typedef struct MCXConfig {
 
     Medium* prop;                 /**<optical property mapping table*/
     POLMedium* polprop;           /**<absorption and scatterer mapping table for polarized photon simulation*/
+    JonesMedium* jonesprop;       /**<birefringence property mapping table*/
     float4* detpos;               /**<detector positions and radius, overwrite detradius*/
     float4* detdir;               /**<detector normal direction and focal length (for adjoint output type)*/
     float4* smatrix;              /**<scattering Mueller matrix */

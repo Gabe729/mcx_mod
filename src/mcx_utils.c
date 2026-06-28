@@ -276,6 +276,7 @@ void mcx_initcfg(Config* cfg) {
     cfg->isgpuinfo = 0;
     cfg->prop = NULL;
     cfg->polprop = NULL;
+    cfg->jonesprop = NULL;    // NEW
     cfg->detpos = NULL;
     cfg->detdir = NULL;
     cfg->smatrix = NULL;
@@ -418,6 +419,7 @@ void mcx_cleargpuinfo(GPUInfo** gpuinfo) {
 void mcx_clearcfg(Config* cfg) {
     if (cfg->medianum) {
         free(cfg->prop);
+        free(cfg->jonesprop);
     }
 
     if (cfg->polmedianum) {
@@ -1914,6 +1916,8 @@ void mcx_preprocess(Config* cfg) {
         for (int i = 1; i < cfg->medianum; i++) {
             cfg->prop[i].mus *= cfg->unitinmm;
             cfg->prop[i].mua *= cfg->unitinmm;
+            cfg->jonesprop[i].chi *= cfg->unitinmm;
+
         }
     }
 

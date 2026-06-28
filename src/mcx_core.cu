@@ -174,6 +174,65 @@ __device__ float dot(const float3& a, const float3& b) {
 }
 
 /**
+ * @brief Cross-product of two float3 vectors c=a×b
+ */
+__device__ float3 cross(const float3& a, const float3& b) {
+    return make_float3(a.y * b.z - a.z * b.y,
+                       a.z * b.x - a.x * b.z,
+                       a.x * b.y - a.y * b.x);
+}
+
+/**
+ * @brief Normalize a float3 vector
+ */
+__device__ float3 normalize(const float3& v) {
+    float invLen = rsqrtf(dot(v, v));
+    return make_float3(v.x * invLen, v.y * invLen, v.z * invLen);
+}
+
+// Complex number operations
+__device__ inline float2 complex_mul(const float2& a, const float2& b) {
+    return make_float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+__device__ inline float2 complex_div(const float2& a, const float2& b) {
+    float denom = b.x * b.x + b.y * b.y;
+    return make_float2((a.x * b.x + a.y * b.y) / denom, (a.y * b.x - a.x * b.y) / denom);
+}
+
+__device__ inline float2 complex_sqrt(const float2& z) {
+    float r = sqrtf(z.x * z.x + z.y * z.y);
+    float half_theta = atan2f(z.y, z.x) / 2.0f;
+    float sqrt_r = sqrtf(r);
+    return make_float2(sqrt_r * cosf(half_theta), sqrt_r * sinf(half_theta));
+}
+
+__device__ inline float2 complex_sinh(const float2& z) {
+    return make_float2(sinhf(z.x) * cosf(z.y), coshf(z.x) * sinf(z.y));
+}
+
+__device__ inline float2 complex_cosh(const float2& z) {
+    return make_float2(coshf(z.x) * cosf(z.y), sinhf(z.x) * sinf(z.y));
+}
+
+__device__ inline float complex_abs(const float2& z) {
+    return sqrtf(z.x * z.x + z.y * z.y);
+}
+
+__device__ inline float2 complex_scalar_mul(const float2& z, const float& s) {
+    return make_float2(z.x * s, z.y * s);
+}
+
+__device__ inline float2 complex_add(const float2& a, const float2& b) {
+    return make_float2(a.x + b.x, a.y + b.y);
+}
+
+__device__ inline float2 complex_sub(const float2& a, const float2& b) {
+    return make_float2(a.x - b.x, a.y - b.y);
+}
+
+
+/**
  * @brief Concatenated optical properties and det positions, stored in constant memory
  *
  * The first cfg.maxmedia elements of this array contain the optical properties of the
@@ -186,6 +245,14 @@ __device__ float dot(const float3& a, const float3& b) {
  */
 
 __constant__ float4 gproperty[MAX_PROP_AND_DETECTORS];
+
+/**
+ * @brief Birefringence properties for each medium, stored in constant memory.
+ *
+ * Each element of this array contains the birefringence properties (ne, chi)
+ * for a specific medium. The index of the array corresponds to the medium ID.
+ */
+__constant__ JonesMedium gjonesproperty[MAX_PROP_AND_DETECTORS];
 
 
 /**
@@ -357,6 +424,195 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
     s->u = s2.u * temp;
     s->v = s2.v * temp;
     s->i = 1.f;
+}
+
+__device__ void jones_to_mueller(float2 m1, float2 m2, float2 m3, float2 m4, float* M) {
+    // m3 <-> m4 are swapped!
+    // Calculate E_k = J_k J_k*
+    float E1 = m1.x * m1.x + m1.y * m1.y;
+    float E2 = m2.x * m2.x + m2.y * m2.y;
+    float E3 = m4.x * m4.x + m4.y * m4.y;
+    float E4 = m3.x * m3.x + m3.y * m3.y;
+
+    // Calculate F_kl = Re(J_k J_l*)
+    float F12 = m1.x * m2.x + m1.y * m2.y;
+    float F13 = m1.x * m4.x + m1.y * m4.y;
+    float F14 = m1.x * m3.x + m1.y * m3.y;
+    float F32 = m4.x * m2.x + m4.y * m2.y;
+    float F34 = m4.x * m3.x + m4.y * m3.y;
+    float F42 = m3.x * m2.x + m3.y * m2.y;
+
+    // Calculate G_kl = -Im(J_k J_l*)
+    float G12 = m1.x * m2.y - m1.y * m2.x;
+    float G13 = m1.x * m4.y - m1.y * m4.x;
+    float G14 = m1.x * m3.y - m1.y * m3.x;
+    float G32 = m4.x * m2.y - m4.y * m2.x;
+    float G34 = m4.x * m3.y - m4.y * m3.x;
+    float G42 = m3.x * m2.y - m3.y * m2.x;
+
+    // Row-major order
+    M[0]  = 0.5f * (E1 + E2 + E3 + E4);
+    M[1]  = 0.5f * (E1 - E2 - E3 + E4);
+    M[2]  = F13 + F42;
+    M[3]  = -G13 - G42;
+    M[4]  = 0.5f * (E1 - E2 + E3 - E4);
+    M[5]  = 0.5f * (E1 + E2 - E3 - E4);
+    M[6]  = F13 - F42;
+    M[7]  = -G13 + G42;
+    M[8]  = F14 + F32;
+    M[9]  = F14 - F32;
+    M[10] = F12 + F34;
+    M[11] = -G12 + G34;
+    M[12] = G14 + G32;
+    M[13] = G14 - G32;
+    M[14] = G12 + G34;
+    M[15] = F12 - F34;
+}
+
+/**
+ * @brief Calculate the angle between two 3D vectors
+ *
+ * This function computes the angle between two 3D vectors. If a reference direction
+ * is provided, it returns a signed angle (-π/2 to π/2) indicating the rotation direction.
+ * Without a reference, it returns the smallest angle (0 to π/2) between the vectors.
+ *
+ * @param[in] a First input vector (should be normalized)
+ * @param[in] b Second input vector (should be normalized)
+ * @param[in] ref_dir Optional reference direction for determining rotation sign
+ * @return Angle between vectors in radians
+ */
+__device__ float angle_between(float3 a, float3 b, float3* ref_dir = NULL) {
+    float3 crossprod = cross(a, b);
+
+    // Use fast CUDA intrinsic function
+    float angle = atan2f(__fsqrt_rn(dot(crossprod, crossprod)), dot(a, b));
+
+    if (ref_dir == NULL) {
+        // 'find theta' case: return smallest angle (0 to π/2)
+        return fminf(angle, ONE_PI - angle);
+    } else {
+        // 'find beta' case: return signed angle (-π/2 to π/2)
+        float sign = copysignf(1.0f, dot(crossprod, *ref_dir));
+        return sign * fminf(angle, ONE_PI - angle);
+    }
+}
+
+/**
+ * @brief Update Stokes vector in between scattering events to model arbitrary polarization effects.
+ *
+ * This function calculates the retardation and optical rotation due to birefringence
+ * and applies it to the photon's Stokes vector using the Jones N-matrix formalism.
+ * The function can be modified to model other effects (e.g. dichroism).
+ *
+ * @param[in] len: Photon step size in grid units.
+ * @param[in] no: Ordinary refractive index.
+ * @param[in] mediaid: The medium ID.
+ * @param[in] lambda: Wavelength of light in nm.
+ * @param[in] u: Photon direction vector (float3*).
+ * @param[in,out] s: Input and output Stokes vector (Stokes*), modified in place.
+ */
+__device__ inline void apply_N_matrix(float len, float no, uint mediaid, float lambda, float3* u, Stokes* s) {
+    // Only perform calculations if the medium exhibits these polarization effects
+    if (gjonesproperty[mediaid & MED_MASK].ne != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].chi != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bx != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
+        gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) {
+
+        float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
+        float3 e_perp, e_parallel, b_prime;
+        float3 B = normalize(make_float3(gjonesproperty[mediaid & MED_MASK].Bx,
+                                         gjonesproperty[mediaid & MED_MASK].By,
+                                         gjonesproperty[mediaid & MED_MASK].Bz));
+        float ne = gjonesproperty[mediaid & MED_MASK].ne;
+        float chi = gjonesproperty[mediaid & MED_MASK].chi * ONE_PI / 180.0f;
+        float theta, beta, g0;
+
+        // Edge case 1: u is aligned with z-axis
+        // In this case, it's not clear how to determine the axes that define the Stokes vector
+        // The x and y axes are chosen arbitrarily. This is not physically accurate,
+        // but this case is so rare that it won't make a difference
+        if (fabsf(dot(*u, z_axis)) > 0.9999f) {
+            e_perp = make_float3(1.0f, 0.0f, 0.0f);
+            e_parallel = make_float3(0.0f, 1.0f, 0.0f);
+        } else {
+            // Normal case
+            e_perp = normalize(cross(*u, z_axis));
+            e_parallel = cross(*u, e_perp);
+        }
+
+        // Normal case: u and B are different
+        if (fabsf(dot(*u, B)) <= 0.9999f) {
+            b_prime = normalize(cross(*u, cross(B, *u)));
+            theta = angle_between(B, *u, NULL);
+            beta = angle_between(e_parallel, b_prime, u);
+            float cos_square_theta = cosf(theta) * cosf(theta);
+            float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
+            g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
+        } else {
+            // Edge case 2: u and B aligned, no birefringence
+            beta = 0.0f;
+            g0 = 0.0f;
+        }
+
+        // Calculate Qn
+        float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
+
+        // Calculate M-matrix elements
+        float2 m1, m2, m3, m4;
+
+        if (complex_abs(Q_N) > 1e-6f) {
+            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 sinh_QNs = complex_sinh(Q_N_len);
+            float2 cosh_QNs = complex_cosh(Q_N_len);
+            float2 factor = complex_div(sinh_QNs, Q_N);
+
+            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            m1 = complex_add(ig0_factor, cosh_QNs);
+            m2 = complex_sub(cosh_QNs, ig0_factor);
+            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+        } else {
+            // For very small Q_N, use Taylor expansion to avoid division by zero
+            float2 Q_N_len = complex_scalar_mul(Q_N, len);
+            float2 Q_N_len_sq = complex_mul(Q_N_len, Q_N_len);
+            float2 factor = complex_sub(make_float2(len, 0.0f), complex_scalar_mul(Q_N_len_sq, 1.0f / 6.0f));   // third order
+
+            float2 cosh_approx = complex_add(make_float2(1.0f, 0.0f), complex_scalar_mul(Q_N_len_sq, 0.5f));    // second order
+            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+
+            m1 = complex_add(cosh_approx, ig0_factor);
+            m2 = complex_sub(cosh_approx, ig0_factor);
+            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
+            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+        }
+
+        // Convert Jones matrix to Mueller matrix
+        float M[16];
+        jones_to_mueller(m1, m2, m3, m4, M);
+
+        // Rotate Stokes vector by beta
+        Stokes s_rotated;
+        rotsphi(s, beta, &s_rotated);
+
+        // Apply Mueller matrix to rotated Stokes vector
+        float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
+        float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                S_new[i] += M[i*4 + j] * S[j];
+            }
+        }
+
+        // Rotate Stokes vector back
+        Stokes s_final;
+        s_final.i = 1.0f;
+        s_final.q = S_new[1] / S_new[0];
+        s_final.u = S_new[2] / S_new[0];
+        s_final.v = S_new[3] / S_new[0];
+        rotsphi(&s_final, -beta, s);
+    }
 }
 
 /**
@@ -1986,7 +2242,7 @@ __global__ void mcx_adjoint_kernel(OutputType* gfield_re, OutputType* gfield_im,
  * @param[in,out] gprogress: pointer to the host variable to update progress bar
  */
 
-template <const int ispencil, const int isreflect, const int islabel, const int issvmc, const int ispolarized>
+template <const int ispencil, const int isreflect, const int islabel, const int issvmc, const int ispolarized, const int isjonespolarized>
 __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[], uint n_seed[],
                               float4 n_pos[], float4 n_dir[], float4 n_len[], float n_det[], uint detectedphoton[],
                               float srcpattern[], float replayweight[], float photontof[], int photondetid[],
@@ -2132,7 +2388,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
             GPUDEBUG(("scat L=%f RNG=[%0lX %0lX] \n", f.pscat, t[0], t[1]));
 
             if (v.nscat != EPS) { //< if v.nscat is EPS, this means it is the initial launch direction, no need to change direction
-                //< random arimuthal angle
+                //< random azimuthal angle
                 float cphi = 1.f, sphi = 0.f, theta, stheta, ctheta;
                 float tmp0 = 0.f;
 
@@ -2378,6 +2634,11 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
         /** if photon moves to the next voxel, use the precomputed intersection coord */
         *((float3*)(&p)) = float3(p.x + len * v.x, p.y + len * v.y, p.z + len * v.z);
+
+        /** NEW - Apply birefringence effects to the photon based on distance travelled */
+        if (isjonespolarized) {
+            apply_N_matrix(len, n1, mediaid, gcfg->lambda, (float3*)&v, &s);
+        }
 
         /** although the below 3 lines look dumb, if you change it to flipdir[flipdir[3]] += ..., the speed drops by half, likely due to step locking */
         if (flipdir[3] == 0) {
@@ -3213,7 +3474,8 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                       cfg->debuglevel, cfg->savedetflag, hostdetreclen, partialdata, w0offset, cfg->mediabyte,
                       (uint)cfg->maxjumpdebug, cfg->gscatter, is2d, cfg->replaydet, cfg->srcnum,
                       cfg->nphase, cfg->nphase + (cfg->nphase & 0x1), cfg->nangle, cfg->nangle + (cfg->nangle & 0x1), cfg->omega,
-                      (cfg->omega > 0.f&& cfg->seed != SEED_FROM_FILE) ? 1u : 0u    /*isrfforward*/
+                      (cfg->omega > 0.f&& cfg->seed != SEED_FROM_FILE) ? 1u : 0u,    /*isrfforward*/
+                      cfg->lambda    /*lambda (nm) for polarized/birefringence simulation*/
                      };
 
     if (param.isatomic) {
@@ -3676,6 +3938,12 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
         CUDA_ASSERT(cudaMemcpyToSymbol(gproperty, cfg->srcdata,  cfg->extrasrclen * 4 * sizeof(float4), cfg->medianum * sizeof(Medium) + cfg->detnum * sizeof(float4), cudaMemcpyHostToDevice));
     }
 
+    // Allocate and transfer jonesprop (birefringence) data to GPU constant memory
+    // Only when jonesprop was provided (gjonesproperty is sized for medianum)
+    if (cfg->jonesprop != NULL) {
+        CUDA_ASSERT(cudaMemcpyToSymbol(gjonesproperty, cfg->jonesprop, cfg->medianum * sizeof(JonesMedium), 0, cudaMemcpyHostToDevice));
+    }
+
     MCX_FPRINTF(cfg->flog, "%s : %d ms\n", T_("init complete"), GetTimeMillis() - tic);
 
     /**
@@ -3778,6 +4046,9 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
             /** \c ispolarized: template constant, if 1, perform polarized light simulations, currently only supports label-based media */
             int ispolarized = (cfg->mediabyte <= 4) && (cfg->polmedianum > 0);
 
+            /** \c isjonespolarized: template constant, if 1, enable additional polarization effects, ispolarized must also be 1 */
+            int isjonespolarized = (ispolarized) && (cfg->jonesprop != NULL);
+
             /** Enable reflection flag when c or m flags are used in the cfg.bc boundary condition flags */
             for (i = 0; i < 6; i++)
                 if (cfg->bc[i] == bcReflect || cfg->bc[i] == bcMirror) {
@@ -3785,90 +4056,111 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                 }
 
             /**
-             * Launch GPU kernel using template constants. Here, the compiler will create 2^4=16 individually compiled
+             * Launch GPU kernel using template constants. Here, the compiler will create 2^4 + 4 = 20 individually compiled
              * kernel PTX binaries for each combination of template variables. This creates bigger binary and slower
              * compilation time, but brings up to 20%-30% speed improvement on certain simulations.
              */
-            switch (ispencil * 10000 + (isref > 0) * 1000 + (cfg->mediabyte <= 4) * 100 + issvmc * 10 + ispolarized) {
+            switch (ispencil * 100000 + (isref > 0) * 10000 + (cfg->mediabyte <= 4) * 1000 + issvmc * 100 + ispolarized * 10 + isjonespolarized) {
                 case 0:
-                    mcx_main_loop<0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    mcx_main_loop<0, 0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 88 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 10:
-                    mcx_main_loop<0, 0, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 100:
+                    mcx_main_loop<0, 0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 112 registers, 464 bytes cmem[0], 348 bytes cmem[2]
-                case 100:
-                    mcx_main_loop<0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1000:
+                    mcx_main_loop<0, 0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 92 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 101:
-                    mcx_main_loop<0, 0, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1010:
+                    mcx_main_loop<0, 0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 328 bytes cmem[2]
-                case 1000:
-                    mcx_main_loop<0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 1011:
+                    mcx_main_loop<0, 0, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 10000:
+                    mcx_main_loop<0, 1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 1010:
-                    mcx_main_loop<0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 10100:
+                    mcx_main_loop<0, 1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 130 registers, 464 bytes cmem[0], 432 bytes cmem[2]
-                case 1100:
-                    mcx_main_loop<0, 1, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 11000:
+                    mcx_main_loop<0, 1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
-                case 1101:
-                    mcx_main_loop<0, 1, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 11010:
+                    mcx_main_loop<0, 1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
-                // Used 96 registers, 464 bytes cmem[0], 328 bytes cmem[2]
-                case 10000:
-                    mcx_main_loop<1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                // Used 96 registers, 464 bytes cmem[0], 320 bytes cmem[2]
+                case 11011:
+                    mcx_main_loop<0, 1, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 100000:
+                    mcx_main_loop<1, 0, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 70 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 10010:
-                    mcx_main_loop<1, 0, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 100100:
+                    mcx_main_loop<1, 0, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 80 registers, 464 bytes cmem[0], 68 bytes cmem[2]
-                case 10100:
-                    mcx_main_loop<1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101000:
+                    mcx_main_loop<1, 0, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 64 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 10101:
-                    mcx_main_loop<1, 0, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101010:
+                    mcx_main_loop<1, 0, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 52 bytes cmem[2]
-                case 11000:
-                    mcx_main_loop<1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 101011:
+                    mcx_main_loop<1, 0, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
+                case 110000:
+                    mcx_main_loop<1, 1, 0, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 11010:
-                    mcx_main_loop<1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 110100:
+                    mcx_main_loop<1, 1, 0, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 80 registers, 464 bytes cmem[0], 152 bytes cmem[2]
-                case 11100:
-                    mcx_main_loop<1, 1, 1, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 111000:
+                    mcx_main_loop<1, 1, 1, 0, 0, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
 
                 // Used 72 registers, 464 bytes cmem[0], 40 bytes cmem[2]
-                case 11101:
-                    mcx_main_loop<1, 1, 1, 0, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                case 111010:
+                    mcx_main_loop<1, 1, 1, 0, 1, 0> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
                     break;
-                    // Used 78 registers, 464 bytes cmem[0], 52 bytes cmem[2]
+
+                // Used 78 registers, 464 bytes cmem[0], 52 bytes cmem[2]
+                case 111011:
+                    mcx_main_loop<1, 1, 1, 0, 1, 1> <<< mcgrid, mcblock, sharedbuf>>>(gmedia, gfield, genergy, gPseed, gPpos, gPdir, gPlen, gPdet, gdetected, gsrcpattern, greplayw, greplaytof, greplaydetid, gseeddata, gdebugdata, ginvcdf, gangleinvcdf, gsmatrix, gprogress);
+                    break;
+
+                // Used x registers, y bytes cmem[0], z bytes cmem[2]
             }
 
             #pragma omp master

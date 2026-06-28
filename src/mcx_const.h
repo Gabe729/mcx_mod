@@ -39,6 +39,7 @@
 #define MCX_VERSION_MAJOR  2
 #define MCX_VERSION_MINOR  8
 
+#define HALF_PI            1.5707963267948966f     /**< pi/2 */
 #define ONE_PI             3.1415926535897932f     /**< pi */
 #define TWO_PI             6.28318530717959f       /**< 2*pi */
 #define R_PI               0.318309886183791f      /**<  1/pi */
@@ -54,7 +55,7 @@
 #define OUTSIDE_VOLUME_MIN 0xFFFFFFFF              /**< flag indicating the index is outside of the volume from x=xmax,y=ymax,z=zmax*/
 #define OUTSIDE_VOLUME_MAX 0x7FFFFFFF              /**< flag indicating the index is outside of the volume from x=0/y=0/z=0*/
 #define BOUNDARY_DET_MASK  0xFFFF0000              /**< flag indicating a boundary face is used as a detector*/
-#define MAX_PROP_AND_DETECTORS   4000              /**< maximum number of property + number of detectors */
+#define MAX_PROP_AND_DETECTORS   1000              /**< maximum number of property + number of detectors. Reduced from 4000 to accomodate birefringence properties */
 #define SEED_FROM_FILE      -999                   /**< special flag indicating to read seeds from an mch file for replay */
 #define NANGLES            1000                    /**< number of discretization points in scattering angles */
 
