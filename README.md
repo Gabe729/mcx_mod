@@ -64,6 +64,71 @@ This release also contains a few bug fixes, including
 * fix typos in pmcx functions
 * package DLL files in the github action build script for mcxlab
 
+Birefringence extension in this fork
+---------------------------------------
+
+This fork adds an experimental Jones/Mueller birefringence path on top of MCX's
+polarised photon mode. It propagates each photon's Stokes vector through a
+per-medium linear birefringence and optical-rotation model between scattering
+events. The feature is intended for chiro-optical and birefringent tissue-optics
+experiments where scalar MCX is not enough.
+
+Enable it from PMCX by supplying:
+
+* `polprop`: MCX's existing polarised-medium table. This turns on polarised mode.
+* `jonesprop`: an `N x 5` table with rows `[ne, chi, Bx, By, Bz]`.
+  - `ne`: extraordinary refractive index.
+  - `chi`: optical rotation in degrees per mm.
+  - `Bx, By, Bz`: extraordinary-axis vector.
+* `lambda`: wavelength in nm.
+* label media, meaning `mediabyte <= 4`.
+
+`jonesprop` rows are indexed by MCX medium label, so include a background row
+for label 0. A minimal ballistic PMCX example is:
+
+```python
+import numpy as np
+import pmcx
+
+cfg = {
+    "nphoton": 20000,
+    "vol": np.ones((5, 5, 5), dtype=np.uint8, order="F"),
+    "prop": [[0, 0, 1, 1], [0, 0, 1, 1.33]],
+    "polprop": [[0.0, 1.0, 0.0, 1.59, 1.33]],
+    "jonesprop": [
+        [0.0, 0.0, 0.0, 0.0, 0.0],      # background
+        [1.33005, 0.0, 0.0, 1.0, 0.0],  # medium 1
+    ],
+    "lambda": 1000.0,
+    "srcpos": [2.5, 2.5, 0.0],
+    "srcdir": [0.0, 0.0, 1.0],
+    "srciquv": [1.0, 0.0, 1.0, 0.0],
+    "issrcfrom0": 1,
+    "unitinmm": 1.0,
+    "bc": "______000001",
+    "issavedet": 1,
+    "issaveexit": 1,
+    "maxdetphoton": 20000,
+    "savedetflag": "DPIXVW",
+    "autopilot": 1,
+    "gpuid": 1,
+}
+
+out = pmcx.mcxlab(cfg)
+print(out["detp"]["s"].mean(axis=0))  # mean detected [I, Q, U, V]
+```
+
+The branch condition is:
+
+```text
+isjonespolarized = (mediabyte <= 4) && (polmedianum > 0) && (jonesprop != NULL)
+```
+
+Validation note: on 29/06/2026, this fork was built on a single RunPod RTX 4090
+and validated against stock MCX scalar parity plus a ballistic linear-retarder
+and optical-rotation benchmark. The retained validation artefacts live in Gabe's
+vault at `Tasks/Technical Research/mcx-mod-birefringence-validation/deliverables/`.
+
 We would like to give our special thank the following contributors
 * @HirviP and @rantahar for their contributions of the new RF-replay feature added in this release (#241, #245)
 * @ShawnSun1031 and @kuilef for the typo fixes
