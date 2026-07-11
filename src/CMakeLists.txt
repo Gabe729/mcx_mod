@@ -147,10 +147,12 @@ else()
     string(REGEX REPLACE "[ \t\r\n]+" " -Xcompiler " OMPFLAG ${OpenMP_CXX_FLAGS})
     string(PREPEND OMPFLAG "-Xcompiler ")
 
+    set(MCX_CUDA_ARCH "sm_50" CACHE STRING "CUDA architecture for MCX")
+
     set(
         CUDA_NVCC_FLAGS
         ${CUDA_NVCC_FLAGS};
-        -g -lineinfo -Xcompiler -Wall -Xcompiler -O3 -arch=sm_50
+        -g -lineinfo -Xcompiler -Wall -Xcompiler -O3 -arch=${MCX_CUDA_ARCH}
         -DMCX_TARGET_NAME="Fermi MCX" -DUSE_ATOMIC -use_fast_math
         -DSAVE_DETECTORS -Xcompiler -fPIC ${OMPFLAG}
     )

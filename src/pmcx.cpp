@@ -40,6 +40,7 @@
 #include "mcx_utils.h"
 #include "mcx_core.h"
 #include "mcx_const.h"
+#include "mcx_mie.h"
 #include "mcx_shapes.h"
 #include "mcx_lang.h"
 #include <pybind11/iostream.h>
@@ -823,6 +824,63 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
         }
     }
 
+    if (user_cfg.contains("smatrix")) {
+        if (!mcx_config.polprop || mcx_config.polmedianum == 0) {
+            throw py::value_error("the 'smatrix' field requires 'polprop'");
+        }
+
+        auto c_style_smatrix = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(user_cfg["smatrix"]);
+
+        if (!c_style_smatrix) {
+            throw py::value_error("Invalid smatrix field value");
+        }
+
+        auto buffer_info = c_style_smatrix.request();
+
+        if (buffer_info.shape.size() != 3 ||
+                buffer_info.shape.at(0) != mcx_config.polmedianum ||
+                buffer_info.shape.at(1) != NANGLES ||
+                buffer_info.shape.at(2) != 4) {
+            throw py::value_error("the 'smatrix' field must have shape (nmedia, NANGLES, 4)");
+        }
+
+        if (mcx_config.smatrix) {
+            free(mcx_config.smatrix);
+        }
+
+        const size_t count = mcx_config.polmedianum * NANGLES;
+        mcx_config.smatrix = (float4*) malloc(count * sizeof(float4));
+        memcpy(mcx_config.smatrix, buffer_info.ptr, count * sizeof(float4));
+    }
+
+    if (user_cfg.contains("polmus")) {
+        if (!mcx_config.polprop || !mcx_config.prop || mcx_config.polmedianum == 0) {
+            throw py::value_error("the 'polmus' field requires both 'prop' and 'polprop'");
+        }
+
+        auto polmus = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(user_cfg["polmus"]);
+
+        if (!polmus) {
+            throw py::value_error("Invalid polmus field value");
+        }
+
+        auto buffer_info = polmus.request();
+
+        if (buffer_info.shape.size() != 1 || buffer_info.shape.at(0) != mcx_config.polmedianum) {
+            throw py::value_error("the 'polmus' field must have one value per polarised medium");
+        }
+
+        auto values = static_cast<float*>(buffer_info.ptr);
+
+        for (int i = 0; i < mcx_config.polmedianum; i++) {
+            if (!(values[i] >= 0.0f) || !isfinite(values[i])) {
+                throw py::value_error("the 'polmus' field must contain finite non-negative values");
+            }
+
+            mcx_config.prop[i + 1].mus = values[i];
+        }
+    }
+
     if (user_cfg.contains("outputtype")) {
         std::string output_type_str = py::str(user_cfg["outputtype"]);
         const char* outputtype[] = {"flux", "fluence", "energy", "jacobian", "nscat", "wl", "wp", "wm", "rf", "length", "rfmus", "wltof", "wptof", "adjoint",
@@ -1527,6 +1585,7 @@ py::dict pmcx_interface(const py::dict& user_cfg) {
                 auto opt_properties = py::array_t<float, py::array::f_style>({4, int(mcx_config.medianum)});
                 memcpy(opt_properties.mutable_data(), mcx_config.prop, mcx_config.medianum * 4 * sizeof(float));
                 output["prop"] = opt_properties;
+
             }
         }
     } catch (const char* err) {
@@ -1606,6 +1665,32 @@ py::str print_version() {
     return py::str(MCX_VERSION);
 }
 
+py::dict mie_smatrix(float radius, float rho, float nsph, float nmed, float wavelength) {
+    if (!(radius > 0.0f) || !(rho >= 0.0f) || !(nsph > 0.0f) || !(nmed > 0.0f) || !(wavelength > 0.0f)) {
+        throw py::value_error("radius, refractive indices and wavelength must be positive; rho must be non-negative");
+    }
+
+    double mu[NANGLES];
+
+    for (int i = 0; i < NANGLES; i++) {
+        mu[i] = cos(ONE_PI * i / (NANGLES - 1));
+    }
+
+    auto matrix = py::array_t<float>(py::array::ShapeContainer{NANGLES, 4});
+    double qsca = 0.0;
+    double g = 0.0;
+    const double x = TWO_PI * radius * nmed / (wavelength * 1e-3);
+    const double area = ONE_PI * radius * radius;
+    Mie(x, nsph / nmed, mu, reinterpret_cast<float4*>(matrix.mutable_data()), &qsca, &g);
+
+    py::dict output;
+    output["smatrix"] = matrix;
+    output["qsca"] = qsca;
+    output["g"] = g;
+    output["mus"] = qsca * area * rho * 1e3;
+    return output;
+}
+
 py::list get_GPU_info() {
     Config mcx_config;            /** mcxconfig: structure to store all simulation parameters */
     GPUInfo* gpu_info = nullptr;        /** gpuinfo: structure to store GPU information */
@@ -1659,4 +1744,8 @@ PYBIND11_MODULE(_pmcx, m) {
           "Prints mcx version information.",
           py::call_guard<py::scoped_ostream_redirect,
           py::scoped_estream_redirect>());
+    m.def("mie_smatrix",
+          &mie_smatrix,
+          "Returns MCX's host-side Mie scattering table and derived mus.",
+          py::arg("radius"), py::arg("rho"), py::arg("nsph"), py::arg("nmed"), py::arg("wavelength"));
 }

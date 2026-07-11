@@ -80,10 +80,10 @@ extern "C" {
 typedef float4 MCXpos; /**< x,y,z: position of the photon, w: weight of the photon*/
 
 typedef struct __align__(16) StokesVector {
-    float i; /**< total light intensity: IH + IV */
-    float q; /**< IH - IV */
-    float u; /**< I(+pi/4) - I(-pi/4) */
-    float v; /**< IR - IL */
+    double i; /**< total light intensity: IH + IV */
+    double q; /**< IH - IV */
+    double u; /**< I(+pi/4) - I(-pi/4) */
+    double v; /**< IR - IL */
 } Stokes;
 
 typedef struct MCXSplit {
@@ -217,4 +217,3 @@ int  mcx_list_gpu(Config* cfg, GPUInfo** info);
 #endif
 
 #endif
-

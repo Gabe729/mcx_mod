@@ -1916,7 +1916,9 @@ void mcx_preprocess(Config* cfg) {
         for (int i = 1; i < cfg->medianum; i++) {
             cfg->prop[i].mus *= cfg->unitinmm;
             cfg->prop[i].mua *= cfg->unitinmm;
-            cfg->jonesprop[i].chi *= cfg->unitinmm;
+            if (cfg->jonesprop) {
+                cfg->jonesprop[i].chi *= cfg->unitinmm;
+            }
 
         }
     }
@@ -2133,6 +2135,8 @@ void mcx_preprocess(Config* cfg) {
  */
 
 void mcx_prep_polarized(Config* cfg) {
+    const int use_custom_smatrix = (cfg->smatrix != NULL);
+
     /* precompute cosine of discretized scattering angles */
     double* mu = (double*)malloc(NANGLES * sizeof(double));
 
@@ -2140,13 +2144,24 @@ void mcx_prep_polarized(Config* cfg) {
         mu[i] = cos(ONE_PI * i / (NANGLES - 1));
     }
 
-    cfg->smatrix = (float4*)malloc(cfg->polmedianum * NANGLES * sizeof(float4));
+    if (!use_custom_smatrix) {
+        cfg->smatrix = (float4*)malloc(cfg->polmedianum * NANGLES * sizeof(float4));
+    }
+
     Medium* prop = cfg->prop;
     POLMedium* polprop = cfg->polprop;
 
     for (int i = 0; i < cfg->polmedianum; i++) {
         prop[i + 1].mua = polprop[i].mua;
         prop[i + 1].n = polprop[i].nmed;
+
+        if (use_custom_smatrix) {
+            if (!(prop[i + 1].mus >= 0.f) || !isfinite(prop[i + 1].mus)) {
+                MCX_ERROR(-6, "custom smatrix requires finite non-negative mus for every polarised medium");
+            }
+
+            continue;
+        }
 
         /* for (i-1)th sphere(r, rho, nsph)-background medium(nmed) combination, compute mus and s-matrix */
         double x, A, qsca, g;

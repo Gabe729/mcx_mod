@@ -190,45 +190,46 @@ __device__ float3 normalize(const float3& v) {
     return make_float3(v.x * invLen, v.y * invLen, v.z * invLen);
 }
 
-// Complex number operations
-__device__ inline float2 complex_mul(const float2& a, const float2& b) {
-    return make_float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+// The Jones/Stokes state uses FP64 so sub-ULP physiological rotations accumulate
+// without changing the Stokes-dependent scattering path.
+__device__ inline double2 complex_mul(const double2& a, const double2& b) {
+    return make_double2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-__device__ inline float2 complex_div(const float2& a, const float2& b) {
-    float denom = b.x * b.x + b.y * b.y;
-    return make_float2((a.x * b.x + a.y * b.y) / denom, (a.y * b.x - a.x * b.y) / denom);
+__device__ inline double2 complex_div(const double2& a, const double2& b) {
+    double denom = b.x * b.x + b.y * b.y;
+    return make_double2((a.x * b.x + a.y * b.y) / denom, (a.y * b.x - a.x * b.y) / denom);
 }
 
-__device__ inline float2 complex_sqrt(const float2& z) {
-    float r = sqrtf(z.x * z.x + z.y * z.y);
-    float half_theta = atan2f(z.y, z.x) / 2.0f;
-    float sqrt_r = sqrtf(r);
-    return make_float2(sqrt_r * cosf(half_theta), sqrt_r * sinf(half_theta));
+__device__ inline double2 complex_sqrt(const double2& z) {
+    double r = hypot(z.x, z.y);
+    double half_theta = atan2(z.y, z.x) / 2.0;
+    double sqrt_r = sqrt(r);
+    return make_double2(sqrt_r * cos(half_theta), sqrt_r * sin(half_theta));
 }
 
-__device__ inline float2 complex_sinh(const float2& z) {
-    return make_float2(sinhf(z.x) * cosf(z.y), coshf(z.x) * sinf(z.y));
+__device__ inline double2 complex_sinh(const double2& z) {
+    return make_double2(sinh(z.x) * cos(z.y), cosh(z.x) * sin(z.y));
 }
 
-__device__ inline float2 complex_cosh(const float2& z) {
-    return make_float2(coshf(z.x) * cosf(z.y), sinhf(z.x) * sinf(z.y));
+__device__ inline double2 complex_cosh(const double2& z) {
+    return make_double2(cosh(z.x) * cos(z.y), sinh(z.x) * sin(z.y));
 }
 
-__device__ inline float complex_abs(const float2& z) {
-    return sqrtf(z.x * z.x + z.y * z.y);
+__device__ inline double complex_abs(const double2& z) {
+    return hypot(z.x, z.y);
 }
 
-__device__ inline float2 complex_scalar_mul(const float2& z, const float& s) {
-    return make_float2(z.x * s, z.y * s);
+__device__ inline double2 complex_scalar_mul(const double2& z, const double& s) {
+    return make_double2(z.x * s, z.y * s);
 }
 
-__device__ inline float2 complex_add(const float2& a, const float2& b) {
-    return make_float2(a.x + b.x, a.y + b.y);
+__device__ inline double2 complex_add(const double2& a, const double2& b) {
+    return make_double2(a.x + b.x, a.y + b.y);
 }
 
-__device__ inline float2 complex_sub(const float2& a, const float2& b) {
-    return make_float2(a.x - b.x, a.y - b.y);
+__device__ inline double2 complex_sub(const double2& a, const double2& b) {
+    return make_double2(a.x - b.x, a.y - b.y);
 }
 
 
@@ -370,9 +371,9 @@ __device__ inline void saveexitppath(float n_det[], float* ppath, MCXpos* p0, ui
  * @param[out] s2: output Stokes parameter
  */
 
-__device__ inline void rotsphi(Stokes* s, float phi, Stokes* s2) {
-    float sin2phi, cos2phi;
-    sincosf(2.f * phi, &sin2phi, &cos2phi);
+__device__ inline void rotsphi(Stokes* s, double phi, Stokes* s2) {
+    double sin2phi, cos2phi;
+    sincos(2.0 * phi, &sin2phi, &cos2phi);
 
     s2->i = s->i;
     s2->q = s->q * cos2phi + s->u * sin2phi;
@@ -391,7 +392,7 @@ __device__ inline void rotsphi(Stokes* s, float phi, Stokes* s2) {
  */
 
 __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u, float3* u2, uint* mediaid, float4* gsmatrix) {
-    float costheta = cosf(theta);
+    double costheta = cos(theta);
     Stokes s2;
     rotsphi(s, phi, &s2);
 
@@ -403,52 +404,52 @@ __device__ inline void updatestokes(Stokes* s, float theta, float phi, float3* u
     s->u = gsmatrix[imedia + ithedeg].z * s2.u + gsmatrix[imedia + ithedeg].w * s2.v;
     s->v = -gsmatrix[imedia + ithedeg].w * s2.u + gsmatrix[imedia + ithedeg].z * s2.v;
 
-    float temp, sini, cosi, sin22, cos22;
+    double temp, sini, cosi, sin22, cos22;
 
-    temp = (u2->z > -1.f && u2->z < 1.f) ? rsqrtf((1.f - costheta * costheta) * (1.f - u2->z * u2->z)) : 0.f;
+    temp = (u2->z > -1.f && u2->z < 1.f) ? 1.0 / sqrt((1.0 - costheta * costheta) * (1.0 - u2->z * u2->z)) : 0.0;
 
-    cosi = (temp == 0.f) ? 0.f : (((phi > ONE_PI && phi < TWO_PI) ? 1.f : -1.f) * (u2->z * costheta - u->z) * temp);
-    cosi = fmaxf(-1.f, fminf(cosi, 1.f));
+    cosi = (temp == 0.0) ? 0.0 : (((phi > ONE_PI && phi < TWO_PI) ? 1.0 : -1.0) * (u2->z * costheta - u->z) * temp);
+    cosi = fmax(-1.0, fmin(cosi, 1.0));
 
-    sini = sqrtf(1.f - cosi * cosi);
-    cos22 = 2.f * cosi * cosi - 1.f;
-    sin22 = 2.f * sini * cosi;
+    sini = sqrt(1.0 - cosi * cosi);
+    cos22 = 2.0 * cosi * cosi - 1.0;
+    sin22 = 2.0 * sini * cosi;
 
     s2.i = s->i;
     s2.q = s->q * cos22 - s->u * sin22;
     s2.u = s->q * sin22 + s->u * cos22;
     s2.v = s->v;
 
-    temp = __fdividef(1.f, s2.i);
+    temp = 1.0 / s2.i;
     s->q = s2.q * temp;
     s->u = s2.u * temp;
     s->v = s2.v * temp;
-    s->i = 1.f;
+    s->i = 1.0;
 }
 
-__device__ void jones_to_mueller(float2 m1, float2 m2, float2 m3, float2 m4, float* M) {
+__device__ void jones_to_mueller(double2 m1, double2 m2, double2 m3, double2 m4, double* M) {
     // m3 <-> m4 are swapped!
     // Calculate E_k = J_k J_k*
-    float E1 = m1.x * m1.x + m1.y * m1.y;
-    float E2 = m2.x * m2.x + m2.y * m2.y;
-    float E3 = m4.x * m4.x + m4.y * m4.y;
-    float E4 = m3.x * m3.x + m3.y * m3.y;
+    double E1 = m1.x * m1.x + m1.y * m1.y;
+    double E2 = m2.x * m2.x + m2.y * m2.y;
+    double E3 = m4.x * m4.x + m4.y * m4.y;
+    double E4 = m3.x * m3.x + m3.y * m3.y;
 
     // Calculate F_kl = Re(J_k J_l*)
-    float F12 = m1.x * m2.x + m1.y * m2.y;
-    float F13 = m1.x * m4.x + m1.y * m4.y;
-    float F14 = m1.x * m3.x + m1.y * m3.y;
-    float F32 = m4.x * m2.x + m4.y * m2.y;
-    float F34 = m4.x * m3.x + m4.y * m3.y;
-    float F42 = m3.x * m2.x + m3.y * m2.y;
+    double F12 = m1.x * m2.x + m1.y * m2.y;
+    double F13 = m1.x * m4.x + m1.y * m4.y;
+    double F14 = m1.x * m3.x + m1.y * m3.y;
+    double F32 = m4.x * m2.x + m4.y * m2.y;
+    double F34 = m4.x * m3.x + m4.y * m3.y;
+    double F42 = m3.x * m2.x + m3.y * m2.y;
 
     // Calculate G_kl = -Im(J_k J_l*)
-    float G12 = m1.x * m2.y - m1.y * m2.x;
-    float G13 = m1.x * m4.y - m1.y * m4.x;
-    float G14 = m1.x * m3.y - m1.y * m3.x;
-    float G32 = m4.x * m2.y - m4.y * m2.x;
-    float G34 = m4.x * m3.y - m4.y * m3.x;
-    float G42 = m3.x * m2.y - m3.y * m2.x;
+    double G12 = m1.x * m2.y - m1.y * m2.x;
+    double G13 = m1.x * m4.y - m1.y * m4.x;
+    double G14 = m1.x * m3.y - m1.y * m3.x;
+    double G32 = m4.x * m2.y - m4.y * m2.x;
+    double G34 = m4.x * m3.y - m4.y * m3.x;
+    double G42 = m3.x * m2.y - m3.y * m2.x;
 
     // Row-major order
     M[0]  = 0.5f * (E1 + E2 + E3 + E4);
@@ -519,76 +520,76 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
         gjonesproperty[mediaid & MED_MASK].By != 0.0f ||
         gjonesproperty[mediaid & MED_MASK].Bz != 0.0f) {
 
-        float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
-        float3 e_perp, e_parallel, b_prime;
-        float3 B = normalize(make_float3(gjonesproperty[mediaid & MED_MASK].Bx,
-                                         gjonesproperty[mediaid & MED_MASK].By,
-                                         gjonesproperty[mediaid & MED_MASK].Bz));
-        float ne = gjonesproperty[mediaid & MED_MASK].ne;
-        float chi = gjonesproperty[mediaid & MED_MASK].chi * ONE_PI / 180.0f;
-        float theta, beta, g0;
+        float3 B_raw = make_float3(gjonesproperty[mediaid & MED_MASK].Bx,
+                                   gjonesproperty[mediaid & MED_MASK].By,
+                                   gjonesproperty[mediaid & MED_MASK].Bz);
+        double ne = gjonesproperty[mediaid & MED_MASK].ne;
+        double chi = gjonesproperty[mediaid & MED_MASK].chi * M_PI / 180.0;
+        double beta = 0.0;
+        double g0 = 0.0;
+        const bool has_linear_birefringence = ne > 0.0 && dot(B_raw, B_raw) > EPS;
 
-        // Edge case 1: u is aligned with z-axis
-        // In this case, it's not clear how to determine the axes that define the Stokes vector
-        // The x and y axes are chosen arbitrarily. This is not physically accurate,
-        // but this case is so rare that it won't make a difference
-        if (fabsf(dot(*u, z_axis)) > 0.9999f) {
-            e_perp = make_float3(1.0f, 0.0f, 0.0f);
-            e_parallel = make_float3(0.0f, 1.0f, 0.0f);
-        } else {
-            // Normal case
-            e_perp = normalize(cross(*u, z_axis));
-            e_parallel = cross(*u, e_perp);
-        }
+        if (has_linear_birefringence) {
+            float3 z_axis = make_float3(0.0f, 0.0f, 1.0f);
+            float3 e_perp, e_parallel, b_prime;
+            float3 B = normalize(B_raw);
 
-        // Normal case: u and B are different
-        if (fabsf(dot(*u, B)) <= 0.9999f) {
-            b_prime = normalize(cross(*u, cross(B, *u)));
-            theta = angle_between(B, *u, NULL);
-            beta = angle_between(e_parallel, b_prime, u);
-            float cos_square_theta = cosf(theta) * cosf(theta);
-            float delta_n = (no * ne) / sqrtf(ne*ne*cos_square_theta + no*no*(1.0f-cos_square_theta)) - no;
-            g0 = ONE_PI * delta_n / (lambda * 1e-6f);  // lambda is in nm, len is in mm
-        } else {
-            // Edge case 2: u and B aligned, no birefringence
-            beta = 0.0f;
-            g0 = 0.0f;
+            // Edge case 1: u is aligned with z-axis
+            if (fabsf(dot(*u, z_axis)) > 0.9999f) {
+                e_perp = make_float3(1.0f, 0.0f, 0.0f);
+                e_parallel = make_float3(0.0f, 1.0f, 0.0f);
+            } else {
+                e_perp = normalize(cross(*u, z_axis));
+                e_parallel = cross(*u, e_perp);
+            }
+
+            if (fabsf(dot(*u, B)) <= 0.9999f) {
+                b_prime = normalize(cross(*u, cross(B, *u)));
+                double theta = angle_between(B, *u, NULL);
+                beta = angle_between(e_parallel, b_prime, u);
+                double cos_square_theta = cos(theta) * cos(theta);
+                double sin_square_theta = 1.0 - cos_square_theta;
+                double denominator = sqrt(ne * ne * cos_square_theta + no * no * sin_square_theta);
+                double delta_n = no * (ne * ne - no * no) * sin_square_theta /
+                                 (denominator * (ne + denominator));
+                g0 = M_PI * delta_n / (lambda * 1e-6);  // lambda is in nm, len is in mm
+            }
         }
 
         // Calculate Qn
-        float2 Q_N = complex_sqrt(make_float2(-g0*g0 - chi*chi, 0.0f));  // This works when LB/CB are the only effects considered
+        double2 Q_N = complex_sqrt(make_double2(-g0 * g0 - chi * chi, 0.0));  // This works when LB/CB are the only effects considered
 
         // Calculate M-matrix elements
-        float2 m1, m2, m3, m4;
+        double2 m1, m2, m3, m4;
 
-        if (complex_abs(Q_N) > 1e-6f) {
-            float2 Q_N_len = complex_scalar_mul(Q_N, len);
-            float2 sinh_QNs = complex_sinh(Q_N_len);
-            float2 cosh_QNs = complex_cosh(Q_N_len);
-            float2 factor = complex_div(sinh_QNs, Q_N);
+        if (complex_abs(Q_N) > 1e-12) {
+            double2 Q_N_len = complex_scalar_mul(Q_N, len);
+            double2 sinh_QNs = complex_sinh(Q_N_len);
+            double2 cosh_QNs = complex_cosh(Q_N_len);
+            double2 factor = complex_div(sinh_QNs, Q_N);
 
-            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            double2 ig0_factor = complex_mul(make_double2(0.0, g0), factor);
             m1 = complex_add(ig0_factor, cosh_QNs);
             m2 = complex_sub(cosh_QNs, ig0_factor);
-            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
-            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+            m3 = complex_scalar_mul(make_double2(chi, 0.0), factor.x);
+            m4 = complex_scalar_mul(make_double2(-chi, 0.0), factor.x);
         } else {
             // For very small Q_N, use Taylor expansion to avoid division by zero
-            float2 Q_N_len = complex_scalar_mul(Q_N, len);
-            float2 Q_N_len_sq = complex_mul(Q_N_len, Q_N_len);
-            float2 factor = complex_sub(make_float2(len, 0.0f), complex_scalar_mul(Q_N_len_sq, 1.0f / 6.0f));   // third order
+            double2 Q_N_len = complex_scalar_mul(Q_N, len);
+            double2 Q_N_len_sq = complex_mul(Q_N_len, Q_N_len);
+            double2 factor = complex_sub(make_double2(len, 0.0), complex_scalar_mul(Q_N_len_sq, 1.0 / 6.0));   // third order
 
-            float2 cosh_approx = complex_add(make_float2(1.0f, 0.0f), complex_scalar_mul(Q_N_len_sq, 0.5f));    // second order
-            float2 ig0_factor = complex_mul(make_float2(0.0f, g0), factor);
+            double2 cosh_approx = complex_add(make_double2(1.0, 0.0), complex_scalar_mul(Q_N_len_sq, 0.5));    // second order
+            double2 ig0_factor = complex_mul(make_double2(0.0, g0), factor);
 
             m1 = complex_add(cosh_approx, ig0_factor);
             m2 = complex_sub(cosh_approx, ig0_factor);
-            m3 = complex_scalar_mul(make_float2(chi, 0.0f), factor.x);
-            m4 = complex_scalar_mul(make_float2(-chi, 0.0f), factor.x);
+            m3 = complex_scalar_mul(make_double2(chi, 0.0), factor.x);
+            m4 = complex_scalar_mul(make_double2(-chi, 0.0), factor.x);
         }
 
         // Convert Jones matrix to Mueller matrix
-        float M[16];
+        double M[16];
         jones_to_mueller(m1, m2, m3, m4, M);
 
         // Rotate Stokes vector by beta
@@ -596,8 +597,8 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
         rotsphi(s, beta, &s_rotated);
 
         // Apply Mueller matrix to rotated Stokes vector
-        float S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
-        float S_new[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        double S[4] = {s_rotated.i, s_rotated.q, s_rotated.u, s_rotated.v};
+        double S_new[4] = {0.0, 0.0, 0.0, 0.0};
 
         for (int i = 0; i < 4; i++) {
             for (int j = 0; j < 4; j++) {
@@ -607,7 +608,7 @@ __device__ inline void apply_N_matrix(float len, float no, uint mediaid, float l
 
         // Rotate Stokes vector back
         Stokes s_final;
-        s_final.i = 1.0f;
+        s_final.i = 1.0;
         s_final.q = S_new[1] / S_new[0];
         s_final.u = S_new[2] / S_new[0];
         s_final.v = S_new[3] / S_new[0];
@@ -1528,7 +1529,10 @@ __device__ inline int launchnewphoton(MCXpos* p, MCXdir* v, Stokes* s, MCXtime* 
         }
 
         if (ispolarized) {
-            *((float4*)s) = gcfg->s0;
+            s->i = gcfg->s0.x;
+            s->q = gcfg->s0.y;
+            s->u = gcfg->s0.z;
+            s->v = gcfg->s0.w;
         }
 
         /**
@@ -2396,7 +2400,8 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
                     uint i = (uint)NANGLES * ((mediaid & MED_MASK) - 1);
 
                     /** Rejection method to choose azimuthal angle phi and deflection angle theta */
-                    float I0, I, sin2phi, cos2phi;
+                    double I0, I;
+                    float sin2phi, cos2phi;
 
                     do {
                         theta = acosf(2.f * rand_next_zangle(t) - 1.f);

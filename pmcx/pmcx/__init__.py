@@ -30,7 +30,7 @@ res = pmcx.run(nphoton=1000000, vol=np.ones([60, 60, 60], dtype='uint8'),
 """
 
 try:
-    from _pmcx import gpuinfo, run, version
+    from _pmcx import gpuinfo, mie_smatrix, run, version
 except ImportError:  # pragma: no cover
     print("the pmcx binary extension (_pmcx) is not compiled! please compile first")
 
@@ -71,6 +71,7 @@ from .plot import (
 )
 
 from .bench import bench
+from .ensemble import ensemble_smatrix
 
 __version__ = "0.7.1"
 
@@ -78,6 +79,8 @@ __all__ = (
     "gpuinfo",
     "run",
     "version",
+    "mie_smatrix",
+    "ensemble_smatrix",
     "bench",
     "detweight",
     "cwdref",
