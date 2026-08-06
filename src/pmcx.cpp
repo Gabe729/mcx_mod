@@ -37,6 +37,8 @@
 #include <iostream>
 #include <complex>
 #include <string>
+#include <limits>
+#include <cmath>
 #include "mcx_utils.h"
 #include "mcx_core.h"
 #include "mcx_const.h"
@@ -992,6 +994,166 @@ void parse_config(const py::dict& user_cfg, Config& mcx_config) {
         mcx_config.invcdf[mcx_config.nphase - 1] = 1.f;
     }
 
+    /**
+     * Per-medium inverse-CDF phase functions.
+     *
+     * Two mutually exclusive entry points, mirroring the JSON front end:
+     *
+     *   cfg['mediainvcdf'] = '/path/to/tables.json'
+     *       load an "mcx_mod.per_material_invcdf" document, including its float32 sidecars.
+     *
+     *   cfg['mediainvcdf'] = {
+     *       'tables':            (M, n_interior) float32,  row i is the INTERIOR table for medium media[i]
+     *       'media':             (M,) int,                 label medium index of each row, >= 1, unique
+     *       'wavelength_nm':     float,                    mandatory; MCX has no wavelength axis, so one
+     *                                                      table set describes exactly one wavelength
+     *       'background_policy': 'native_hg'|'isotropic'|'forbidden'    mandatory, medium 0
+     *   }
+     *
+     * Endpoint padding (-1 and +1) is applied here, exactly as the legacy 'invcdf' path does, so the
+     * caller supplies interior values only. Every failure mode below is a py::value_error; there is
+     * no path that silently drops, truncates or approximates a table.
+     */
+    if (user_cfg.contains("mediainvcdf")) {
+        if (mcx_config.nphase > 0) {
+            throw py::value_error("cfg.invcdf (global) and cfg.mediainvcdf (per-medium) are mutually exclusive; supply exactly one");
+        }
+
+        if (py::isinstance<py::str>(user_cfg["mediainvcdf"])) {
+            std::string docpath = py::str(user_cfg["mediainvcdf"]);
+            mcx_load_invcdf_media_file(&mcx_config, docpath.c_str());
+        } else {
+            py::dict spec;
+
+            try {
+                spec = user_cfg["mediainvcdf"].cast<py::dict>();
+            } catch (...) {
+                throw py::value_error("the 'mediainvcdf' field must be either a path string or a dict");
+            }
+
+            if (!spec.contains("tables") || !spec.contains("media")) {
+                throw py::value_error("cfg.mediainvcdf must contain both 'tables' and 'media'");
+            }
+
+            if (!spec.contains("wavelength_nm")) {
+                throw py::value_error("cfg.mediainvcdf must declare 'wavelength_nm'; MCX has no wavelength axis in the phase-function machinery, so one table set describes exactly one wavelength");
+            }
+
+            if (!spec.contains("background_policy")) {
+                throw py::value_error("cfg.mediainvcdf must declare 'background_policy' (one of native_hg, isotropic, forbidden); medium 0 behaviour must be a declaration, not a default");
+            }
+
+            std::string bgpolicy = py::str(spec["background_policy"]);
+
+            if (bgpolicy != "native_hg" && bgpolicy != "isotropic" && bgpolicy != "forbidden") {
+                throw py::value_error("cfg.mediainvcdf['background_policy'] must be one of native_hg, isotropic, forbidden");
+            }
+
+            auto tables = py::array_t < float, py::array::c_style | py::array::forcecast >::ensure(spec["tables"]);
+            auto medialist = py::array_t < int, py::array::c_style | py::array::forcecast >::ensure(spec["media"]);
+
+            if (!tables || !medialist) {
+                throw py::value_error("cfg.mediainvcdf['tables'] must be a 2-D float array and ['media'] an integer vector");
+            }
+
+            auto tinfo = tables.request();
+            auto minfo = medialist.request();
+
+            if (tinfo.ndim != 2) {
+                throw py::value_error("cfg.mediainvcdf['tables'] must have shape (nrows, n_interior)");
+            }
+
+            unsigned int nrows = (unsigned int)tinfo.shape[0];
+            unsigned int ninterior = (unsigned int)tinfo.shape[1];
+
+            if ((unsigned int)minfo.size != nrows) {
+                throw py::value_error("cfg.mediainvcdf['media'] must have one entry per row of ['tables']");
+            }
+
+            if (ninterior < 1) {
+                throw py::value_error("cfg.mediainvcdf['tables'] must carry at least one interior sample per medium");
+            }
+
+            const float* tval = static_cast<const float*>(tinfo.ptr);
+            const int* mval = static_cast<const int*>(minfo.ptr);
+            unsigned int maxmedium = 0;
+
+            for (unsigned int i = 0; i < nrows; i++) {
+                if (mval[i] < 1) {
+                    throw py::value_error("cfg.mediainvcdf['media'] entries must be >= 1; medium 0 is the exterior and carries no phase function");
+                }
+
+                if (mval[i] > MCX_INVCDF_MAX_MEDIA) {
+                    throw py::value_error("cfg.mediainvcdf['media'] entry exceeds MAX_PROP_AND_DETECTORS");
+                }
+
+                for (unsigned int j = 0; j < i; j++) {
+                    if (mval[j] == mval[i]) {
+                        throw py::value_error("cfg.mediainvcdf['media'] contains a duplicate medium index; the table-to-medium association must be unambiguous");
+                    }
+                }
+
+                if ((unsigned int)mval[i] > maxmedium) {
+                    maxmedium = (unsigned int)mval[i];
+                }
+            }
+
+            mcx_config.nphase = ninterior + 2;
+            mcx_config.invcdfmedianum = maxmedium;
+
+            if (mcx_config.invcdf) {
+                free(mcx_config.invcdf);
+            }
+
+            if (mcx_config.invcdfrowvalid) {
+                free(mcx_config.invcdfrowvalid);
+            }
+
+            mcx_config.invcdf = (float*) malloc(sizeof(float) * (size_t)maxmedium * mcx_config.nphase);
+            mcx_config.invcdfrowvalid = (unsigned char*) calloc(maxmedium, 1);
+
+            /* undeclared rows are poisoned so that an indexing mistake is loudly wrong, not plausibly wrong */
+            for (size_t k = 0; k < (size_t)maxmedium * mcx_config.nphase; k++) {
+                mcx_config.invcdf[k] = std::numeric_limits<float>::quiet_NaN();
+            }
+
+            for (unsigned int i = 0; i < nrows; i++) {
+                float* row = mcx_config.invcdf + (size_t)(mval[i] - 1) * mcx_config.nphase;
+                const float* src = tval + (size_t)i * ninterior;
+
+                row[0] = -1.f;
+
+                for (unsigned int j = 0; j < ninterior; j++) {
+                    if (!std::isfinite(src[j]) || src[j] < -1.f || src[j] > 1.f) {
+                        throw py::value_error("cfg.mediainvcdf['tables'] contains invalid data; every value must be finite and lie in [-1, 1]");
+                    }
+
+                    if (j > 0 && src[j] < src[j - 1]) {
+                        throw py::value_error("cfg.mediainvcdf['tables'] contains invalid data; each row must be monotonically non-decreasing");
+                    }
+
+                    row[j + 1] = src[j];
+                }
+
+                row[mcx_config.nphase - 1] = 1.f;
+                mcx_config.invcdfrowvalid[mval[i] - 1] = 1;
+            }
+
+            mcx_config.invcdflambda = spec["wavelength_nm"].cast<float>();
+
+            if (!(mcx_config.invcdflambda > 0.f)) {
+                throw py::value_error("cfg.mediainvcdf['wavelength_nm'] must be a positive number");
+            }
+
+            strncpy(mcx_config.invcdfbgpolicy, bgpolicy.c_str(), sizeof(mcx_config.invcdfbgpolicy) - 1);
+            strncpy(mcx_config.invcdfdocid, "1.0.0", sizeof(mcx_config.invcdfdocid) - 1);
+        }
+    }
+
+    if (user_cfg.contains("invcdfcount")) {
+        mcx_config.invcdfcount = user_cfg["invcdfcount"].cast<int>();
+    }
+
     if (user_cfg.contains("angleinvcdf")) {
         auto f_style_volume = py::array_t < float, py::array::f_style | py::array::forcecast >::ensure(user_cfg["angleinvcdf"]);
 
@@ -1572,6 +1734,19 @@ py::dict pmcx_interface(const py::dict& user_cfg) {
             }
 
             stat_dict["workload"] = workload;
+
+            /**
+             * Per-medium inverse-CDF execution counters.
+             * Shape (nmedia, 2): column 0 counts zenith angles drawn from an inverse-CDF table in
+             * that medium, column 1 counts those drawn from the native Henyey-Greenstein branch.
+             * A non-zero column 1 under a per-medium run is a declared fallback, never a silent one.
+             */
+            if (mcx_config.invcdfcount && mcx_config.invcdfhit && mcx_config.invcdfhitlen) {
+                auto hits = py::array_t<unsigned long long, py::array::c_style>({(int)(mcx_config.invcdfhitlen / 2), 2});
+                memcpy(hits.mutable_data(), mcx_config.invcdfhit, sizeof(unsigned long long) * mcx_config.invcdfhitlen);
+                stat_dict["invcdfhits"] = hits;
+            }
+
             output["stat"] = stat_dict;
 
             /** return the final optical properties for polarized MCX simulation */
@@ -1665,6 +1840,10 @@ py::str print_version() {
     return py::str(MCX_VERSION);
 }
 
+py::str print_mod_version() {
+    return py::str(MCX_MOD_VERSION);
+}
+
 py::dict mie_smatrix(float radius, float rho, float nsph, float nmed, float wavelength) {
     if (!(radius > 0.0f) || !(rho >= 0.0f) || !(nsph > 0.0f) || !(nmed > 0.0f) || !(wavelength > 0.0f)) {
         throw py::value_error("radius, refractive indices and wavelength must be positive; rho must be non-negative");
@@ -1729,7 +1908,7 @@ py::list get_GPU_info() {
 }
 
 PYBIND11_MODULE(_pmcx, m) {
-    m.doc() = "PMCX (" MCX_VERSION "): Python bindings for Monte Carlo eXtreme photon transport simulator, https://mcx.space";
+    m.doc() = "PMCX (" MCX_VERSION ", mcx_mod " MCX_MOD_VERSION "): Python bindings for Monte Carlo eXtreme photon transport simulator, https://mcx.space";
     m.def("run", &pmcx_interface, "Runs MCX with the given config.", py::call_guard<py::scoped_ostream_redirect,
           py::scoped_estream_redirect>());
     m.def("run", &pmcx_interface_wargs, "Runs MCX with the given config.", py::call_guard<py::scoped_ostream_redirect,
@@ -1744,6 +1923,7 @@ PYBIND11_MODULE(_pmcx, m) {
           "Prints mcx version information.",
           py::call_guard<py::scoped_ostream_redirect,
           py::scoped_estream_redirect>());
+    m.def("mod_version", &print_mod_version, "Returns the mcx_mod extension version.");
     m.def("mie_smatrix",
           &mie_smatrix,
           "Returns MCX's host-side Mie scattering table and derived mus.",

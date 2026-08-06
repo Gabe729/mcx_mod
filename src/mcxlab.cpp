@@ -1368,6 +1368,17 @@ void mcx_set_field(const mxArray* root, const mxArray* item, int idx, Config* cf
         cfg->invcdf[0] = -1.f;
         cfg->invcdf[cfg->nphase - 1] = 1.f;
         printf("mcx.invcdf=[%d];\n", cfg->nphase);
+    } else if (strcmp(name, "mediainvcdf") == 0 || strcmp(name, "invcdfcount") == 0) {
+        /**
+         * Per-medium inverse-CDF phase functions are NOT implemented in the MATLAB front end.
+         *
+         * This is a deliberate, declared gap, not an oversight. The feature is implemented in the
+         * JSON/CLI front end (Domain.MediaInverseCDF, --mediainvcdf) and in PMCX (cfg['mediainvcdf']).
+         * Accepting the field here and quietly ignoring it would leave a MATLAB caller running a
+         * single global table, or a scalar g, while believing it had per-medium phase functions --
+         * precisely the silent-degradation failure this feature exists to eliminate. So it errors.
+         */
+        mexErrMsgTxt("cfg.mediainvcdf / cfg.invcdfcount are NOT implemented in MCXLAB. Per-medium inverse-CDF phase functions are available through the JSON/CLI front end (Domain.MediaInverseCDF, --mediainvcdf) and through PMCX (cfg['mediainvcdf']). MCXLAB refuses the field rather than silently running with a single global table or a scalar g.");
     } else if (strcmp(name, "angleinvcdf") == 0) {
         dimtype nangle = mxGetNumberOfElements(item);
         double* val = mxGetPr(item);

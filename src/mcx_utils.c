@@ -114,7 +114,8 @@
 const char shortopt[] = {'h', 'i', 'f', 'n', 't', 'T', 's', 'a', 'g', 'b', '-', 'z', 'u', 'H', 'P',
                          'd', 'r', 'S', 'p', 'e', 'U', 'R', 'l', 'L', '-', 'I', '-', 'G', 'M', 'A', 'E', 'v', 'D',
                          'k', 'q', 'Y', 'O', 'F', '-', '-', 'x', 'X', '-', 'K', 'm', 'V', 'B', 'W', 'w', '-',
-                         'Q', '-', 'Z', 'j', '-', '-', '-', 'N', 'y', '\0'
+                         'Q', '-', 'Z', 'j', '-', '-', '-', 'N', 'y',
+                         '-', '-', '\0'
                         };
 
 /**
@@ -133,7 +134,8 @@ const char* fullopt[] = {"--help", "--interactive", "--input", "--photon",
                          "--maxvoidstep", "--saveexit", "--saveref", "--gscatter", "--mediabyte",
                          "--momentum", "--specular", "--bc", "--workload", "--savedetflag",
                          "--internalsrc", "--bench", "--dumpjson", "--zip", "--json", "--atomic",
-                         "--srcid", "--trajstokes", "--net", "--lang", ""
+                         "--srcid", "--trajstokes", "--net", "--lang",
+                         "--mediainvcdf", "--invcdfcount", ""
                         };
 
 /**
@@ -355,6 +357,16 @@ void mcx_initcfg(Config* cfg) {
     cfg->gscatter = 1e9;   /** by default, honor anisotropy for all scattering, use --gscatter to reduce it */
     cfg->nphase = 0;
     cfg->invcdf = NULL;
+    cfg->invcdfmedianum = 0;
+    cfg->invcdfrowvalid = NULL;
+    cfg->invcdflambda = 0.f;
+    cfg->invcdfcount = 0;
+    cfg->invcdfhit = NULL;
+    cfg->invcdfhitlen = 0;
+    cfg->invcdfmanifestdone = 0;
+    memset(cfg->invcdfbgpolicy, 0, sizeof(cfg->invcdfbgpolicy));
+    memset(cfg->invcdffile, 0, MAX_PATH_LENGTH);
+    memset(cfg->invcdfdocid, 0, sizeof(cfg->invcdfdocid));
     cfg->nangle = 0;
     cfg->angleinvcdf = NULL;
     cfg->srcid = 0;
@@ -505,6 +517,14 @@ void mcx_clearcfg(Config* cfg) {
 
     if (cfg->invcdf) {
         free(cfg->invcdf);
+    }
+
+    if (cfg->invcdfrowvalid) {
+        free(cfg->invcdfrowvalid);
+    }
+
+    if (cfg->invcdfhit) {
+        free(cfg->invcdfhit);
     }
 
     if (cfg->angleinvcdf) {
@@ -1774,6 +1794,716 @@ void mcx_writeconfig(char* fname, Config* cfg) {
 
 #endif
 
+/*==========================================================================================*
+ * Per-medium inverse-CDF phase functions
+ *
+ * Layout decision (ADR "per-medium inverse-CDF phase functions in mcx_mod", decision D3):
+ * dense equal-length tables indexed by medium, resident in GLOBAL device memory, mirroring the
+ * existing per-medium gsmatrix convention. cfg->invcdf carries a row-major
+ * [invcdfmedianum x nphase] block; row m-1 belongs to label medium m. The legacy single global
+ * table is the invcdfmedianum == 0 case of the same buffer and the same kernel arithmetic.
+ *
+ * Interchange format: the "mcx_mod.per_material_invcdf" document. MCX reads the validated
+ * document directly, so there is no second table format to keep in step.
+ *==========================================================================================*/
+
+/**
+ * @brief Minimal self-contained SHA-256, used to enforce the table document's declared
+ *        sha256_interior_f32 against the float32 image actually loaded (validation rule V7).
+ */
+
+typedef struct MCXSha256State {
+    unsigned int h[8];
+    unsigned long long bitlen;
+    unsigned char buf[64];
+    unsigned int buflen;
+} MCXSha256;
+
+static const unsigned int mcx_sha256_k[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+};
+
+#define MCX_ROTR32(x,n)  (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void mcx_sha256_block(MCXSha256* s, const unsigned char* p) {
+    unsigned int w[64], a, b, c, d, e, f, g, h, t1, t2;
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        w[i] = ((unsigned int)p[i * 4] << 24) | ((unsigned int)p[i * 4 + 1] << 16) |
+               ((unsigned int)p[i * 4 + 2] << 8) | ((unsigned int)p[i * 4 + 3]);
+    }
+
+    for (i = 16; i < 64; i++) {
+        unsigned int s0 = MCX_ROTR32(w[i - 15], 7) ^ MCX_ROTR32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        unsigned int s1 = MCX_ROTR32(w[i - 2], 17) ^ MCX_ROTR32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    a = s->h[0];
+    b = s->h[1];
+    c = s->h[2];
+    d = s->h[3];
+    e = s->h[4];
+    f = s->h[5];
+    g = s->h[6];
+    h = s->h[7];
+
+    for (i = 0; i < 64; i++) {
+        t1 = h + (MCX_ROTR32(e, 6) ^ MCX_ROTR32(e, 11) ^ MCX_ROTR32(e, 25)) + ((e & f) ^ ((~e) & g)) + mcx_sha256_k[i] + w[i];
+        t2 = (MCX_ROTR32(a, 2) ^ MCX_ROTR32(a, 13) ^ MCX_ROTR32(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2;
+    }
+
+    s->h[0] += a;
+    s->h[1] += b;
+    s->h[2] += c;
+    s->h[3] += d;
+    s->h[4] += e;
+    s->h[5] += f;
+    s->h[6] += g;
+    s->h[7] += h;
+}
+
+/**
+ * @brief Compute the lowercase hex SHA-256 of a byte buffer
+ *
+ * @param[in] data: pointer to the buffer
+ * @param[in] len: buffer length in bytes
+ * @param[out] out: 65-byte output buffer receiving 64 hex characters plus a terminating NUL
+ */
+
+void mcx_sha256_hex(const void* data, size_t len, char out[65]) {
+    MCXSha256 s;
+    const unsigned char* p = (const unsigned char*)data;
+    unsigned char tail[128];
+    size_t i, done = 0;
+    unsigned int taillen;
+    unsigned long long bits = (unsigned long long)len * 8ULL;
+
+    s.h[0] = 0x6a09e667u;
+    s.h[1] = 0xbb67ae85u;
+    s.h[2] = 0x3c6ef372u;
+    s.h[3] = 0xa54ff53au;
+    s.h[4] = 0x510e527fu;
+    s.h[5] = 0x9b05688cu;
+    s.h[6] = 0x1f83d9abu;
+    s.h[7] = 0x5be0cd19u;
+    s.bitlen = 0;
+    s.buflen = 0;
+
+    while (len - done >= 64) {
+        mcx_sha256_block(&s, p + done);
+        done += 64;
+    }
+
+    taillen = (unsigned int)(len - done);
+    memcpy(tail, p + done, taillen);
+    tail[taillen++] = 0x80;
+
+    if (taillen > 56) {
+        while (taillen < 64) {
+            tail[taillen++] = 0;
+        }
+
+        mcx_sha256_block(&s, tail);
+        taillen = 0;
+    }
+
+    while (taillen < 56) {
+        tail[taillen++] = 0;
+    }
+
+    for (i = 0; i < 8; i++) {
+        tail[56 + i] = (unsigned char)((bits >> (56 - 8 * i)) & 0xFF);
+    }
+
+    mcx_sha256_block(&s, tail);
+
+    for (i = 0; i < 8; i++) {
+        sprintf(out + i * 8, "%08x", s.h[i]);
+    }
+
+    out[64] = '\0';
+}
+
+/**
+ * @brief Typed cJSON accessors used by the per-medium table loader
+ *
+ * The file-scope FIND_JSON_KEY / FIND_JSON_OBJ macros are deliberately NOT used here: they depend
+ * on file-local `tmp` and `root` variables and silently fall back to a second lookup against the
+ * simulation's own JSON root, which is exactly the kind of implicit behaviour this loader must not
+ * have. These accessors are strict and type-checked.
+ */
+
+static cJSON* mcx_json_obj(cJSON* parent, const char* key) {
+    return (parent ? cJSON_GetObjectItem(parent, key) : NULL);
+}
+
+static char* mcx_json_str(cJSON* parent, const char* key) {
+    cJSON* o = mcx_json_obj(parent, key);
+    return ((o && (o->type & 0xFF) == cJSON_String) ? o->valuestring : NULL);
+}
+
+static cJSON* mcx_json_num(cJSON* parent, const char* key) {
+    cJSON* o = mcx_json_obj(parent, key);
+    return ((o && (o->type & 0xFF) == cJSON_Number) ? o : NULL);
+}
+
+/**
+ * @brief Resolve a table sidecar path declared relative to the table document
+ */
+
+static void mcx_invcdf_resolvepath(const char* docdir, const char* rel, char* out, size_t outlen) {
+    size_t dlen = 0;
+
+    if (rel[0] == '/' || docdir == NULL || docdir[0] == '\0') {
+        strncpy(out, rel, outlen - 1);
+        out[outlen - 1] = '\0';
+        return;
+    }
+
+    dlen = strlen(docdir);
+
+    if (docdir[dlen - 1] == '/' || docdir[dlen - 1] == '\\') {
+        snprintf(out, outlen, "%s%s", docdir, rel);
+    } else {
+        snprintf(out, outlen, "%s%c%s", docdir, pathsep, rel);
+    }
+}
+
+/**
+ * @brief Load one per-medium inverse-CDF table document and materialise the dense table block
+ *
+ * Enforces the per-medium table document's file-level validation rules. Every failure is a
+ * hard error: there is no path in this function that silently drops a table, truncates one, pads
+ * one, or substitutes a scalar-g approximation.
+ *
+ * Deliberate deviation from stage-B rule V11 (medium_index contiguous from 1): gaps ARE allowed
+ * here, because media without a declared table must fall back to the NATIVE
+ * Henyey-Greenstein path. V11 exists to stop a gap causing a medium to silently read a neighbour's
+ * table; that hazard is removed instead by (a) a per-row validity flag that gates the kernel's
+ * constant-memory presence mask, (b) filling undeclared rows with NaN so any indexing mistake is
+ * loudly wrong rather than plausibly wrong, (c) naming every fallback medium in the run manifest,
+ * and (d) counting fallback events per medium at run time.
+ *
+ * @param[in,out] cfg: simulation configuration
+ * @param[in] doc: parsed cJSON document root
+ * @param[in] docdir: directory of the document, used to resolve binary sidecar paths (may be NULL)
+ */
+
+void mcx_load_invcdf_media(Config* cfg, cJSON* doc, const char* docdir) {
+    cJSON* item = NULL, *media = NULL, *tables = NULL, *entry = NULL;
+    char* schema = NULL, *version = NULL, *bgpolicy = NULL;
+    int i, j, nmedia = 0, maxmedium = 0, nphase = 0;
+    int* mediumidx = NULL;
+    char** tableid = NULL;
+    float* interior = NULL;
+
+    if (!doc) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: the table document is empty or is not valid JSON");
+    }
+
+    /** V1: schema identity and major version */
+    schema = mcx_json_str(doc, "schema");
+
+    if (!schema || strcmp(schema, MCX_INVCDF_SCHEMA) != 0) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: document 'schema' must be \"" MCX_INVCDF_SCHEMA "\"");
+    }
+
+    version = mcx_json_str(doc, "schema_version");
+
+    if (!version || atoi(version) != MCX_INVCDF_SCHEMA_MAJOR) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: unsupported 'schema_version' major number; refusing to interpret an unknown format optimistically");
+    }
+
+    strncpy(cfg->invcdfdocid, version, sizeof(cfg->invcdfdocid) - 1);
+
+    /** Wavelength: mandatory, provenance only. MCX has NO wavelength axis in the phase-function
+     *  machinery (cfg->lambda serves polarisation alone), so a table document describes exactly one
+     *  wavelength and a multi-wavelength study is one MCX run per wavelength. */
+    item = mcx_json_num(doc, "wavelength_nm");
+
+    if (!item) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: 'wavelength_nm' is mandatory; one table document describes exactly one wavelength");
+    }
+
+    cfg->invcdflambda = (float)item->valuedouble;
+
+    if (!(cfg->invcdflambda > 0.f)) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: 'wavelength_nm' must be a positive number");
+    }
+
+    /** V13: background policy is an explicit declaration, never a default */
+    bgpolicy = mcx_json_str(doc, "background_policy");
+
+    if (!bgpolicy || (strcmp(bgpolicy, "native_hg") && strcmp(bgpolicy, "isotropic") && strcmp(bgpolicy, "forbidden"))) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: 'background_policy' must be one of native_hg, isotropic, forbidden");
+    }
+
+    strncpy(cfg->invcdfbgpolicy, bgpolicy, sizeof(cfg->invcdfbgpolicy) - 1);
+
+    media = mcx_json_obj(doc, "media");
+    tables = mcx_json_obj(doc, "tables");
+
+    if (!media || !tables) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: the document must contain both 'media' and 'tables'");
+    }
+
+    nmedia = cJSON_GetArraySize(media);
+
+    if (nmedia < 1) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: 'media' must declare at least one medium");
+    }
+
+    mediumidx = (int*)calloc(nmedia, sizeof(int));
+    tableid = (char**)calloc(nmedia, sizeof(char*));
+
+    entry = media->child;
+
+    for (i = 0; i < nmedia; i++) {
+        cJSON* midobj = NULL;
+
+        if (!entry) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: malformed 'media' array");
+        }
+
+        midobj = mcx_json_num(entry, "medium_index");
+
+        if (!midobj) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: every entry of 'media' must carry an integer 'medium_index'");
+        }
+
+        mediumidx[i] = midobj->valueint;
+        tableid[i] = mcx_json_str(entry, "table_id");
+
+        if (!tableid[i] || tableid[i][0] == '\0') {
+            MCX_ERROR(-1, "per-medium inverse-CDF: every entry of 'media' must carry a non-empty 'table_id'");
+        }
+
+        /** V9: medium 0 is the exterior and cannot own a table */
+        if (mediumidx[i] < 1) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: 'medium_index' must be >= 1; medium 0 is the exterior and carries no phase function");
+        }
+
+        if (mediumidx[i] > MCX_INVCDF_MAX_MEDIA) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: 'medium_index' exceeds MAX_PROP_AND_DETECTORS");
+        }
+
+        /** V10: no duplicate medium_index */
+        for (j = 0; j < i; j++) {
+            if (mediumidx[j] == mediumidx[i]) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: duplicate 'medium_index' in 'media'; the association of table to medium must be unambiguous");
+            }
+        }
+
+        if (mediumidx[i] > maxmedium) {
+            maxmedium = mediumidx[i];
+        }
+
+        entry = entry->next;
+    }
+
+    /** First pass over the referenced tables: establish and check the common nphase (V2, V3, V8, V12) */
+    for (i = 0; i < nmedia; i++) {
+        cJSON* tab = mcx_json_obj(tables, tableid[i]);
+        cJSON* np = NULL, *ni = NULL;
+
+        if (!tab) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: a 'media' entry references a 'table_id' that does not exist in 'tables'");
+        }
+
+        np = mcx_json_num(tab, "nphase");
+        ni = mcx_json_num(tab, "n_interior");
+
+        if (!np || !ni) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: every table must declare both 'nphase' and 'n_interior'");
+        }
+
+        if (np->valueint != ni->valueint + 2) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: 'nphase' must equal 'n_interior' + 2 (the two padded endpoints)");
+        }
+
+        if (np->valueint <= 2) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: 'nphase' must be greater than 2, otherwise the sampling branch never activates");
+        }
+
+        if (nphase == 0) {
+            nphase = np->valueint;
+        } else if (nphase != np->valueint) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: all tables must share the same 'nphase' under the dense layout; ragged tables are refused, never truncated or padded");
+        }
+    }
+
+    /** V14: refuse a table larger than the caller's declared device budget, if one is given */
+    item = mcx_json_num(doc, "max_nphase");
+
+    if (item && nphase > item->valueint) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: 'nphase' exceeds the document's declared 'max_nphase'");
+    }
+
+    /** Materialise the dense block. Undeclared rows are poisoned with NaN so that an indexing
+     *  mistake produces an obviously broken result rather than a plausible one. */
+    if (cfg->invcdf) {
+        free(cfg->invcdf);
+    }
+
+    if (cfg->invcdfrowvalid) {
+        free(cfg->invcdfrowvalid);
+    }
+
+    cfg->invcdf = (float*)malloc(sizeof(float) * (size_t)maxmedium * nphase);
+    cfg->invcdfrowvalid = (unsigned char*)calloc(maxmedium, 1);
+
+    if (!cfg->invcdf || !cfg->invcdfrowvalid) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: out of memory materialising the dense table block");
+    }
+
+    for (i = 0; i < maxmedium * nphase; i++) {
+        cfg->invcdf[i] = (float)NAN;
+    }
+
+    cfg->nphase = nphase;
+    cfg->invcdfmedianum = (unsigned int)maxmedium;
+
+    interior = (float*)malloc(sizeof(float) * (nphase - 2));
+
+    for (i = 0; i < nmedia; i++) {
+        cJSON* tab = mcx_json_obj(tables, tableid[i]);
+        cJSON* inline_interior = mcx_json_obj(tab, "interior");
+        cJSON* binobj = mcx_json_obj(tab, "interior_binary");
+        char* declaredhash = mcx_json_str(tab, "sha256_interior_f32");
+        char gothash[65];
+        float* row = cfg->invcdf + (size_t)(mediumidx[i] - 1) * nphase;
+        int nint = nphase - 2;
+
+        if (inline_interior && binobj) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: a table must declare exactly one of 'interior' and 'interior_binary'");
+        }
+
+        if (inline_interior) {
+            cJSON* vv = inline_interior->child;
+
+            /** V6: declared length must match */
+            if (cJSON_GetArraySize(inline_interior) != nint) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: the inline 'interior' array length does not match 'n_interior'");
+            }
+
+            for (j = 0; j < nint; j++) {
+                interior[j] = (float)vv->valuedouble;
+                vv = vv->next;
+            }
+        } else if (binobj) {
+            char* relpath = mcx_json_str(binobj, "path");
+            char* dtype = mcx_json_str(binobj, "dtype");
+            cJSON* cnt = mcx_json_num(binobj, "count");
+            char fullpath[MAX_PATH_LENGTH] = {'\0'};
+            FILE* fp = NULL;
+            size_t nread = 0;
+
+            if (!relpath || relpath[0] == '\0') {
+                MCX_ERROR(-1, "per-medium inverse-CDF: 'interior_binary' must declare a 'path'");
+            }
+
+            if (!dtype || strcmp(dtype, "<f4")) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: 'interior_binary.dtype' must be \"<f4\" (little-endian float32)");
+            }
+
+            /** V6: declared count must match n_interior */
+            if (!cnt || cnt->valueint != nint) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: 'interior_binary.count' does not match 'n_interior'");
+            }
+
+            mcx_invcdf_resolvepath(docdir, relpath, fullpath, MAX_PATH_LENGTH);
+            fp = fopen(fullpath, "rb");
+
+            if (!fp) {
+                MCX_FPRINTF(cfg->flog, "per-medium inverse-CDF: cannot open table binary '%s'\n", fullpath);
+                MCX_ERROR(-1, "per-medium inverse-CDF: a declared table binary is missing or unreadable");
+            }
+
+            nread = fread(interior, sizeof(float), nint, fp);
+
+            if (nread != (size_t)nint) {
+                fclose(fp);
+                MCX_ERROR(-1, "per-medium inverse-CDF: a declared table binary is shorter than 'n_interior'");
+            }
+
+            /** the file must contain EXACTLY n_interior values; a longer file means the manifest and
+             *  the data have drifted apart, which is exactly the failure V7 exists to catch */
+            if (fgetc(fp) != EOF) {
+                fclose(fp);
+                MCX_ERROR(-1, "per-medium inverse-CDF: a declared table binary is longer than 'n_interior'");
+            }
+
+            fclose(fp);
+        } else {
+            MCX_ERROR(-1, "per-medium inverse-CDF: a table must declare either 'interior' or 'interior_binary'");
+        }
+
+        /** V4 and V5: exactly MCX's own checks, applied per row */
+        for (j = 0; j < nint; j++) {
+            if (!isfinite(interior[j])) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: table contains a non-finite value");
+            }
+
+            if (interior[j] < -1.f || interior[j] > 1.f) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: table values must all lie in [-1, 1]");
+            }
+
+            if (j > 0 && interior[j] < interior[j - 1]) {
+                MCX_ERROR(-1, "per-medium inverse-CDF: table values must be monotonically non-decreasing");
+            }
+        }
+
+        /** V7: the declared hash must match the float32 image actually loaded */
+        if (declaredhash && declaredhash[0]) {
+            mcx_sha256_hex(interior, sizeof(float) * nint, gothash);
+
+            if (strcmp(gothash, declaredhash)) {
+                MCX_FPRINTF(cfg->flog, "per-medium inverse-CDF: table '%s' declares sha256 %s but the loaded float32 image hashes to %s\n",
+                            tableid[i], declaredhash, gothash);
+                MCX_ERROR(-1, "per-medium inverse-CDF: declared table hash does not match the data");
+            }
+        }
+
+        /** the same endpoint padding the three legacy front ends apply */
+        row[0] = -1.f;
+
+        for (j = 0; j < nint; j++) {
+            row[j + 1] = interior[j];
+        }
+
+        row[nphase - 1] = 1.f;
+
+        if (row[1] < row[0] || row[nphase - 1] < row[nphase - 2]) {
+            MCX_ERROR(-1, "per-medium inverse-CDF: table is not monotonic once the -1/+1 endpoints are padded on");
+        }
+
+        cfg->invcdfrowvalid[mediumidx[i] - 1] = 1;
+    }
+
+    free(interior);
+    free(mediumidx);
+    free(tableid);
+}
+
+/**
+ * @brief Load a per-medium inverse-CDF table document from a file
+ *
+ * @param[in,out] cfg: simulation configuration
+ * @param[in] fname: path of the JSON document
+ */
+
+void mcx_load_invcdf_media_file(Config* cfg, const char* fname) {
+    FILE* fp = fopen(fname, "rb");
+    char* buf = NULL, docdir[MAX_PATH_LENGTH] = {'\0'};
+    long len = 0;
+    size_t nread = 0;
+    const char* slash = NULL;
+    cJSON* doc = NULL;
+
+    if (!fp) {
+        MCX_FPRINTF(cfg->flog, "per-medium inverse-CDF: cannot open table document '%s'\n", fname);
+        MCX_ERROR(-1, "per-medium inverse-CDF: the declared table document is missing or unreadable");
+    }
+
+    fseek(fp, 0, SEEK_END);
+    len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (len <= 0) {
+        fclose(fp);
+        MCX_ERROR(-1, "per-medium inverse-CDF: the declared table document is empty");
+    }
+
+    buf = (char*)calloc((size_t)len + 1, 1);
+    nread = fread(buf, 1, (size_t)len, fp);
+    fclose(fp);
+
+    if (nread != (size_t)len) {
+        free(buf);
+        MCX_ERROR(-1, "per-medium inverse-CDF: short read on the table document");
+    }
+
+    doc = cJSON_Parse(buf);
+    free(buf);
+
+    if (!doc) {
+        MCX_ERROR(-1, "per-medium inverse-CDF: the table document is not valid JSON");
+    }
+
+    slash = strrchr(fname, '/');
+#ifdef WIN32
+
+    if (!slash) {
+        slash = strrchr(fname, '\\');
+    }
+
+#endif
+
+    if (slash) {
+        size_t dlen = (size_t)(slash - fname) + 1;
+
+        if (dlen >= MAX_PATH_LENGTH) {
+            dlen = MAX_PATH_LENGTH - 1;
+        }
+
+        memcpy(docdir, fname, dlen);
+        docdir[dlen] = '\0';
+    }
+
+    strncpy(cfg->invcdffile, fname, MAX_PATH_LENGTH - 1);
+    mcx_load_invcdf_media(cfg, doc, docdir);
+    cJSON_Delete(doc);
+}
+
+/**
+ * @brief Engine-level validation and preparation for per-medium inverse-CDF phase functions
+ *
+ * Implements the stage-B engine rules E1-E5, i.e. the checks a table document cannot express about
+ * itself. Every one of them is a hard error; there is no configuration in which MCX quietly
+ * degrades a per-medium request into a global table or into a scalar-g approximation.
+ *
+ * @param[in,out] cfg: simulation configuration
+ */
+
+void mcx_prep_invcdf_media(Config* cfg) {
+    unsigned int hitlen = 0;
+
+    /** allocate the optional per-medium execution counters. Done
+     *  first and unconditionally so that the counters also work for a pure native-HG run, which is
+     *  what makes "the table branch was never entered" a measured fact rather than an assumption. */
+    if (cfg->invcdfcount && cfg->invcdfhit == NULL) {
+        hitlen = 2 * (cfg->medianum > 1 ? cfg->medianum - 1 : 1);
+
+        if (cfg->invcdfmedianum && 2 * cfg->invcdfmedianum > hitlen) {
+            hitlen = 2 * cfg->invcdfmedianum;
+        }
+
+        if (hitlen > 2 * MCX_INVCDF_MAX_MEDIA) {
+            hitlen = 2 * MCX_INVCDF_MAX_MEDIA;
+        }
+
+        cfg->invcdfhit = (unsigned long long*)calloc(hitlen, sizeof(unsigned long long));
+        cfg->invcdfhitlen = hitlen;
+    }
+
+    if (cfg->invcdfmedianum == 0 && cfg->nphase == 0) {
+        return;   /* neither the legacy nor the per-medium phase table is in use */
+    }
+
+    if (cfg->nphase && cfg->nphase <= 2) {
+        MCX_ERROR(-1, "inverse-CDF phase function: nphase must exceed 2 after endpoint padding");
+    }
+
+    if (cfg->invcdfmedianum) {
+        /** E2: per-medium inverse-CDF and MCX polarised mode are mutually exclusive at this revision.
+         *  The invcdf branch is unreachable when ispolarized (the polarised branch samples theta and
+         *  phi jointly by rejection against gsmatrix), so silently honouring one of the two requests
+         *  is the worst available outcome. Fail loudly instead. */
+        if (cfg->polmedianum > 0 || cfg->polprop != NULL || cfg->smatrix != NULL) {
+            MCX_ERROR(-6, "per-medium inverse-CDF and polarised mode are MUTUALLY EXCLUSIVE at this revision: the inverse-CDF branch is unreachable when polarisation is on. Remove 'polprop'/'smatrix' or remove the per-medium table document; MCX will not choose for you");
+        }
+
+        /** E1: label media only. Non-label formats reconstruct properties per voxel and carry no
+         *  medium index at all, so there is nothing to associate a table with. */
+        if (cfg->mediabyte > 4) {
+            MCX_ERROR(-6, "per-medium inverse-CDF requires a label-based media format (mediabyte <= 4); non-label voxel formats carry no medium index to associate a table with");
+        }
+
+        if (cfg->medianum && cfg->invcdfmedianum > cfg->medianum - 1) {
+            MCX_ERROR(-6, "per-medium inverse-CDF: a table is declared for a medium index that exceeds the number of media in 'prop'");
+        }
+
+        /** background policy 'forbidden' means the exterior medium must not scatter at all */
+        if (cfg->medianum && strcmp(cfg->invcdfbgpolicy, "forbidden") == 0 && cfg->prop && cfg->prop[0].mus > 0.f) {
+            MCX_ERROR(-6, "per-medium inverse-CDF: background_policy is 'forbidden' but medium 0 has mus > 0, so the background would scatter with an undeclared phase function");
+        }
+    }
+
+}
+
+/**
+ * @brief Print the per-medium inverse-CDF run manifest
+ *
+ * Nothing about this feature is allowed to be implicit. This block states, in the run log: which
+ * document was loaded, which wavelength it claims, how the table is laid out on the device, which
+ * medium got which table, and -- named individually -- every medium that has NO table and will
+ * therefore use the native Henyey-Greenstein branch with its scalar g.
+ *
+ * @param[in] cfg: simulation configuration
+ */
+
+void mcx_print_invcdf_manifest(Config* cfg) {
+    unsigned int i;
+    int nfallback = 0;
+
+    if (cfg->invcdfmanifestdone) {
+        return;
+    }
+
+    cfg->invcdfmanifestdone = 1;
+
+    if (cfg->invcdfmedianum == 0) {
+        if (cfg->nphase > 2) {
+            MCX_FPRINTF(cfg->flog, "\nphase function: LEGACY single global inverse-CDF table, nphase=%u, applied to every medium\n",
+                        cfg->nphase);
+            MCX_FPRINTF(cfg->flog, "  per-medium inverse-CDF: not requested\n");
+            MCX_FPRINTF(cfg->flog, "  gscatter=%u (the mus' shortcut is inert whenever the inverse-CDF branch is taken)\n\n", cfg->gscatter);
+        }
+
+        return;
+    }
+
+    MCX_FPRINTF(cfg->flog, "\n%s\n", "================ per-medium inverse-CDF phase functions ================");
+    MCX_FPRINTF(cfg->flog, "  document          %s\n", cfg->invcdffile[0] ? cfg->invcdffile : "(supplied in memory)");
+    MCX_FPRINTF(cfg->flog, "  schema            %s v%s\n", MCX_INVCDF_SCHEMA, cfg->invcdfdocid);
+    MCX_FPRINTF(cfg->flog, "  wavelength        %.4g nm  (MCX has NO wavelength axis in the phase-function machinery:\n", cfg->invcdflambda);
+    MCX_FPRINTF(cfg->flog, "                    one table per material per wavelength, materialised per run. A single run\n");
+    MCX_FPRINTF(cfg->flog, "                    carries the phase fidelity of exactly ONE wavelength, no more.)\n");
+    MCX_FPRINTF(cfg->flog, "  layout            dense [%u media x %u samples] row-major, resident in GLOBAL device memory\n",
+                cfg->invcdfmedianum, cfg->nphase);
+    MCX_FPRINTF(cfg->flog, "  device bytes      %lu\n", (unsigned long)(sizeof(float) * (size_t)cfg->invcdfmedianum * cfg->nphase));
+    MCX_FPRINTF(cfg->flog, "  background        medium 0 policy '%s'; medium 0 never owns a table\n", cfg->invcdfbgpolicy);
+    MCX_FPRINTF(cfg->flog, "  unitinmm          %g  (phase tables are DIMENSIONLESS and are NOT rescaled by it, unlike mua/mus)\n", cfg->unitinmm);
+    MCX_FPRINTF(cfg->flog, "  gscatter          %u  (the mus' shortcut is inert whenever the inverse-CDF branch is taken)\n", cfg->gscatter);
+    MCX_FPRINTF(cfg->flog, "  polarisation      OFF (mutually exclusive with this feature at this revision)\n");
+    MCX_FPRINTF(cfg->flog, "  exec counters     %s\n", cfg->invcdfcount ? "ON" : "off (enable with cfg.invcdfcount=1 / --invcdfcount 1 to prove per-medium execution)");
+    MCX_FPRINTF(cfg->flog, "  %s\n", "---- medium -> phase function ----");
+
+    for (i = 1; i < (cfg->medianum ? cfg->medianum : cfg->invcdfmedianum + 1); i++) {
+        if (i <= cfg->invcdfmedianum && cfg->invcdfrowvalid[i - 1]) {
+            MCX_FPRINTF(cfg->flog, "  medium %-4u  per-medium inverse-CDF table, row %u\n", i, i - 1);
+        } else {
+            nfallback++;
+            MCX_FPRINTF(cfg->flog, "  medium %-4u  NO TABLE -> FALLBACK to the native Henyey-Greenstein branch with scalar g=%g\n",
+                        i, (cfg->prop && i < cfg->medianum) ? cfg->prop[i].g : 0.f);
+        }
+    }
+
+    if (nfallback) {
+        MCX_FPRINTF(cfg->flog, S_YELLOW "  %d medium/media above have NO declared phase table and will transport with a scalar g.\n"
+                    "  This is a declared compatibility approximation, not a phase function.\n" S_RESET, nfallback);
+    }
+
+    MCX_FPRINTF(cfg->flog, "%s\n\n", "=======================================================================");
+}
+
 /**
  * @brief Preprocess user input and prepare the cfg data structure
  *
@@ -1895,6 +2625,13 @@ void mcx_preprocess(Config* cfg) {
     if (cfg->medianum == 0) {
         MCX_ERROR(-4, "you must define the 'prop' field in the input structure");
     }
+
+    /** Engine-level validation of the per-medium inverse-CDF request, then the run manifest.
+     *  Deliberately placed AFTER mcx_prep_polarized so that the mutual-exclusion check sees the
+     *  final polarised state, and BEFORE the unitinmm rescale below so that it is obvious in the
+     *  source that the phase tables are never touched by it (they are dimensionless). */
+    mcx_prep_invcdf_media(cfg);
+    mcx_print_invcdf_manifest(cfg);
 
     if (cfg->dim.x == 0 || cfg->dim.y == 0 || cfg->dim.z == 0) {
         MCX_ERROR(-4, "the 'vol' field in the input structure can not be empty");
@@ -2775,6 +3512,12 @@ int mcx_loadjson(cJSON* root, Config* cfg) {
 
         if (val) {
             int nphase = cJSON_GetArraySize(val);
+
+            /** refuse a contradiction rather than resolving it by precedence */
+            if (cfg->invcdfmedianum) {
+                MCX_ERROR(-1, "Domain.InverseCDF (global) conflicts with an already-declared per-medium inverse-CDF table set; supply exactly one");
+            }
+
             cfg->nphase = nphase + 2; /*left-/right-ends are excluded, so added 2*/
 
             if (cfg->invcdf) {
@@ -2796,6 +3539,32 @@ int mcx_loadjson(cJSON* root, Config* cfg) {
 
             cfg->invcdf[nphase + 1] = 1.f; /*left end is always -1.f,right-end is always 1.f*/
             cfg->invcdf[cfg->nphase - 1] = 1.f;
+        }
+
+        /**
+         * Domain.MediaInverseCDF associates a declared inverse-CDF table with each medium.
+         *
+         * It accepts either a string, taken as the path of an "mcx_mod.per_material_invcdf"
+         * document, or the document inlined as an object. It is mutually exclusive with the legacy
+         * Domain.InverseCDF: supplying both is a contradiction about which table governs a medium
+         * and is refused rather than resolved by precedence.
+         */
+        val = FIND_JSON_OBJ("MediaInverseCDF", "Domain.MediaInverseCDF", Domain);
+
+        if (val) {
+            if (cfg->nphase > 0 && cfg->invcdfmedianum == 0) {
+                MCX_ERROR(-1, "Domain.InverseCDF (global) and Domain.MediaInverseCDF (per-medium) are mutually exclusive; supply exactly one");
+            }
+
+            if (cfg->invcdfmedianum) {
+                MCX_ERROR(-1, "a per-medium inverse-CDF table set is already declared (via --mediainvcdf); Domain.MediaInverseCDF would silently override it, so it is refused");
+            }
+
+            if ((val->type & 0xFF) == cJSON_String) {
+                mcx_load_invcdf_media_file(cfg, val->valuestring);
+            } else {
+                mcx_load_invcdf_media(cfg, val, cfg->rootpath);
+            }
         }
 
         val = FIND_JSON_OBJ("VoxelSize", "Domain.VoxelSize", Domain);
@@ -5614,7 +6383,20 @@ void mcx_parsecmd(int argc, char* argv[], Config* cfg) {
                     break;
 
                 case '-':  /*additional verbose parameters*/
-                    if (strcmp(argv[i] + 2, "maxvoidstep") == 0) {
+                    if (strcmp(argv[i] + 2, "mediainvcdf") == 0) {
+                        /** path of an "mcx_mod.per_material_invcdf" per-medium table document */
+                        char invcdfdoc[MAX_PATH_LENGTH] = {'\0'};
+                        i = mcx_readarg(argc, argv, i, invcdfdoc, "string");
+
+                        if (cfg->nphase > 0 && cfg->invcdfmedianum == 0) {
+                            MCX_ERROR(-1, "--mediainvcdf conflicts with an already-declared global inverse-CDF table; supply exactly one");
+                        }
+
+                        mcx_load_invcdf_media_file(cfg, invcdfdoc);
+                    } else if (strcmp(argv[i] + 2, "invcdfcount") == 0) {
+                        /** enable the per-medium inverse-CDF execution counters */
+                        i = mcx_readarg(argc, argv, i, &(cfg->invcdfcount), "int");
+                    } else if (strcmp(argv[i] + 2, "maxvoidstep") == 0) {
                         i = mcx_readarg(argc, argv, i, &(cfg->maxvoidstep), "int");
                     } else if (strcmp(argv[i] + 2, "maxjumpdebug") == 0) {
                         i = mcx_readarg(argc, argv, i, &(cfg->maxjumpdebug), "int");
@@ -5848,7 +6630,7 @@ void mcx_version(Config* cfg) {
     const char ver[] = "$Rev::      $ " MCX_VERSION;
     uint v = 0;
     sscanf(ver, "$Rev::%x", &v);
-    MCX_FPRINTF(cfg->flog, "%s:\t%x\nVersion:\t%s\nMajor:\t\t%d\nMinor:\t\t%d\n", T_("MCX Revision"), v, MCX_VERSION, MCX_VERSION_MAJOR, MCX_VERSION_MINOR);
+    MCX_FPRINTF(cfg->flog, "%s:\t%x\nVersion:\t%s\nFork:\t\tmcx_mod %s\nMajor:\t\t%d\nMinor:\t\t%d\n", T_("MCX Revision"), v, MCX_VERSION, MCX_MOD_VERSION, MCX_VERSION_MAJOR, MCX_VERSION_MINOR);
     exit(0);
 }
 
@@ -6033,7 +6815,7 @@ void mcx_printheader(Config* cfg) {
 
         MCX_FPRINTF(cfg->flog, S_MAGENTA"\
 ###############################################################################\n\
-$Rev::      $" S_GREEN MCX_VERSION S_MAGENTA  "$Date::                       $ by $Author::             $\n\
+$Rev::      $" S_GREEN MCX_VERSION " / mcx_mod " MCX_MOD_VERSION S_MAGENTA  "$Date::                  $\n\
 ###############################################################################\n" S_RESET);
     }
 }
@@ -6247,6 +7029,21 @@ where possible parameters include (the first value in [*|*] is the default)\n\
  --gscatter     [1e9|int]      after a photon completes the specified number of\n\
                                scattering events, mcx then ignores anisotropy g\n\
                                and only performs isotropic scattering for speed\n\
+ --mediainvcdf  ['''|string]   path to a per-medium inverse-CDF phase-function\n\
+                               document (schema mcx_mod.per_material_invcdf),\n\
+                               equivalent to Domain.MediaInverseCDF in the JSON\n\
+                               input. Associates a declared inverse-CDF table\n\
+                               with each label medium; media with no declared\n\
+                               table fall back to the native Henyey-Greenstein\n\
+                               branch, and every such fallback is named in the\n\
+                               run manifest. One document = one wavelength.\n\
+                               Mutually exclusive with polarised mode.\n\
+ --invcdfcount  [0|1]          set to 1 to count, per medium, how many zenith\n\
+                               angles were drawn from an inverse-CDF table and\n\
+                               how many from the native HG branch; the totals\n\
+                               are printed at the end of the run. Costs one\n\
+                               atomic per scattering event; use it to prove a\n\
+                               per-medium run is not passing vacuously\n\
  --srcid  [0|-1,0,1,2,..]     -1 simulate multi-source separately;0 all sources\n\
                                together;a positive integer runs a single source\n\
  --internalsrc  [0|1]          set to 1 to skip entry search to speedup launch\n\

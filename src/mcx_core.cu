@@ -265,6 +265,25 @@ __constant__ JonesMedium gjonesproperty[MAX_PROP_AND_DETECTORS];
 __constant__ MCXParam gcfg[1];
 
 /**
+ * @brief Per-medium inverse-CDF execution counters, in global memory.
+ *
+ * Two counters per label medium, indexed by (label-1):
+ *   ginvcdfhit[2*(m-1)]     number of scattering events in medium m whose zenith angle was drawn
+ *                           from an inverse-CDF table (per-medium row m, or the legacy global table);
+ *   ginvcdfhit[2*(m-1)+1]   number of scattering events in medium m that used the native
+ *                           Henyey-Greenstein / isotropic branch instead.
+ *
+ * This diagnostic proves, per medium, that the
+ * per-medium path actually executed, and it makes any fallback to the native branch countable
+ * rather than inferred. It is a diagnostic and costs one global atomic per scattering event, so it
+ * is gated on \c gcfg->invcdfcount (cfg.invcdfcount / --invcdfcount) and is OFF by default.
+ *
+ * Declared as a __device__ symbol rather than a kernel argument so that the kernel signature and
+ * the twenty template launch sites are untouched (ADR decision D4).
+ */
+__device__ unsigned long long ginvcdfhit[2 * MCX_INVCDF_MAX_MEDIA];
+
+/**
  * @brief Global variable to store the number of photon movements for debugging purposes
  */
 
@@ -2286,8 +2305,19 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
     /**
      *  Load use-defined phase function (inversion of CDF) to the shared memory (first gcfg->nphase floats)
+     *
+     *  This staging runs only in LEGACY mode (gcfg->invcdfmedianum == 0, i.e. a single global
+     *  table). In per-medium mode the dense [M x nphase] block stays resident in global memory and
+     *  gcfg->nphaselen is 0, so nothing may be written here -- writing would overrun the shared
+     *  allocation, which no longer reserves room for the table.
+     *
+     *  Correctness fix: the terminating __threadfence_block() upstream is a memory-ordering
+     *  fence, not a barrier, while the sampling site reads entries written by other warps. It is
+     *  replaced by __syncthreads(). The enclosing condition is uniform across the block (it reads
+     *  constant memory only) and this code runs before the early return below, so every thread of
+     *  the block reaches the barrier.
      */
-    if (gcfg->nphase) {
+    if (gcfg->nphase && gcfg->invcdfmedianum == 0) {
         idx1d = gcfg->nphase / blockDim.x;
 
         for (idx1dold = 0; idx1dold < idx1d; idx1dold++) {
@@ -2300,7 +2330,7 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
             }
         }
 
-        __threadfence_block();
+        __syncthreads();
     }
 
     /**
@@ -2319,7 +2349,8 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
             }
         }
 
-        __threadfence_block();
+        /** Same fence-is-not-a-barrier fix as the phase-function staging above. */
+        __syncthreads();
     }
 
     if (idx >= gcfg->threadphoton * (blockDim.x * gridDim.x) + gcfg->oddphotons) {
@@ -2425,11 +2456,70 @@ __global__ void mcx_main_loop(uint media[], OutputType field[], float genergy[],
 
                     GPUDEBUG(("scat phi=%f\n", tmp0));
 
+                    /**
+                     * Resolve which inverse-CDF table (if any) governs the CURRENT medium.
+                     *
+                     *   invcdftab == NULL  -> no table applies here, use the native HG/isotropic branch below;
+                     *   legacy mode        -> the single global table staged in shared memory (bit-identical
+                     *                         to upstream: same values, same index expression, same lerp);
+                     *   per-medium mode    -> row (label-1) of the dense global block, selected by a
+                     *                         constant-memory presence bit so that a medium without a
+                     *                         declared table falls back to the native branch and is counted.
+                     *
+                     * The base offset is computed from values already live (mediaid and constant memory),
+                     * and nothing is cached across the photon loop, per ADR section 4.4.
+                     */
+                    const float* invcdftab = NULL;
+
                     if (gcfg->nphase > 2) { // after padding the left/right ends, nphase must be 3 or more
+                        if (gcfg->invcdfmedianum == 0) {
+                            invcdftab = (const float*)(sharedmem);
+                        } else {
+                            uint invcdfmid = (issvmc ? (uint)SV_CURLABEL(nuvox.sv) : (mediaid & MED_MASK));
+
+                            if (invcdfmid >= 1 && invcdfmid <= gcfg->invcdfmedianum &&
+                                    (gcfg->invcdfmask[invcdfmid >> 5] & (1u << (invcdfmid & 31u)))) {
+                                invcdftab = ginvcdf + (size_t)gcfg->nphase * (invcdfmid - 1);
+                            }
+                        }
+                    }
+
+                    if (gcfg->invcdfcount) {
+                        uint invcdfmid = (issvmc ? (uint)SV_CURLABEL(nuvox.sv) : (mediaid & MED_MASK));
+
+                        if (invcdfmid >= 1 && invcdfmid <= MCX_INVCDF_MAX_MEDIA) {
+                            unsigned int invcdfslot = ((invcdfmid - 1) << 1) + (invcdftab == NULL ? 1u : 0u);
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 700)
+                            /**
+                             * Warp-aggregated increment. Every counter slot has only a handful of
+                             * distinct addresses across the whole grid, so a naive per-event atomic
+                             * serialises on two or three cache lines and was measured to cost 12.7x
+                             * throughput. Threads of a warp sharing a slot elect the lowest-numbered
+                             * lane, which performs ONE atomicAdd of the group size. Semantics are
+                             * unchanged; only the atomic traffic is reduced, by up to 32x.
+                             */
+                            unsigned int invcdfpeers = __match_any_sync(__activemask(), invcdfslot);
+
+                            if ((threadIdx.x & 31u) == (unsigned int)(__ffs(invcdfpeers) - 1)) {
+                                atomicAdd(ginvcdfhit + invcdfslot, (unsigned long long)__popc(invcdfpeers));
+                            }
+
+#else
+                            atomicAdd(ginvcdfhit + invcdfslot, 1ULL);
+#endif
+                        }
+                    }
+
+                    if (invcdftab) {
                         tmp0 = rand_uniform01(t) * (gcfg->nphase - 1);
                         theta = tmp0 - ((int)tmp0);
-                        tmp0 = (1.f - theta) * ((float*)(sharedmem))[(int)tmp0   >= gcfg->nphase ? gcfg->nphase - 1 : (int)(tmp0)  ] +
-                               theta * ((float*)(sharedmem))[(int)tmp0 + 1 >= gcfg->nphase ? gcfg->nphase - 1 : (int)(tmp0) + 1];
+                        tmp0 = (1.f - theta) * invcdftab[(int)tmp0   >= gcfg->nphase ? gcfg->nphase - 1 : (int)(tmp0)  ] +
+                               theta * invcdftab[(int)tmp0 + 1 >= gcfg->nphase ? gcfg->nphase - 1 : (int)(tmp0) + 1];
+                        /** The native HG branch below clamps before acosf and this one did not; a
+                         *  float32 convex combination that rounds outside [-1,1] would produce NaN. The
+                         *  clamp is exact for every in-range value, so it does not change any result that
+                         *  was already well defined. */
+                        tmp0 = fmaxf(-1.f, fminf(1.f, tmp0));
                         theta = acosf(tmp0);
                         stheta = sinf(theta);
                         ctheta = tmp0;
@@ -3483,6 +3573,28 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
                       cfg->lambda    /*lambda (nm) for polarized/birefringence simulation*/
                      };
 
+    /**
+     * Per-medium inverse-CDF phase functions.
+     *
+     * These fields sit at the end of MCXParam and are assigned here rather than in the positional
+     * aggregate initialiser above. In per-medium mode nothing is staged into shared memory, so
+     * \c nphaselen is forced to 0 -- which both removes the table from the shared-memory request and
+     * makes the staging loop in the kernel a no-op.
+     */
+    param.invcdfmedianum = cfg->invcdfmedianum;
+    param.invcdfcount = (cfg->invcdfcount != 0);
+    memset(param.invcdfmask, 0, sizeof(param.invcdfmask));
+
+    if (cfg->invcdfmedianum) {
+        param.nphaselen = 0;
+
+        for (unsigned int i = 0; i < cfg->invcdfmedianum; i++) {
+            if (cfg->invcdfrowvalid && cfg->invcdfrowvalid[i]) {
+                param.invcdfmask[(i + 1) >> 5] |= (1u << ((i + 1) & 31u));
+            }
+        }
+    }
+
     if (param.isatomic) {
         param.skipradius2 = 0.f;
     }
@@ -3785,8 +3897,22 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
     }
 
     if (cfg->nphase) {
-        CUDA_ASSERT(cudaMalloc((void**) &ginvcdf, sizeof(float)*cfg->nphase));
-        CUDA_ASSERT(cudaMemcpy(ginvcdf, cfg->invcdf, sizeof(float)*cfg->nphase, cudaMemcpyHostToDevice));
+        /**
+         * One contiguous block. Legacy mode uploads a single table of \c nphase floats exactly as
+         * upstream; per-medium mode uploads the dense row-major [invcdfmedianum x nphase] block. The
+         * device-side layout is identical in both cases, which is what makes legacy the M=1 case of
+         * the same code path rather than a separate branch (ADR decision D6).
+         */
+        size_t ninvcdf = (size_t)cfg->nphase * (cfg->invcdfmedianum ? cfg->invcdfmedianum : 1);
+        CUDA_ASSERT(cudaMalloc((void**) &ginvcdf, sizeof(float)*ninvcdf));
+        CUDA_ASSERT(cudaMemcpy(ginvcdf, cfg->invcdf, sizeof(float)*ninvcdf, cudaMemcpyHostToDevice));
+    }
+
+    /** Zero the per-medium execution counters before the first launch on this device */
+    if (cfg->invcdfcount) {
+        unsigned long long* zerohit = (unsigned long long*)calloc(2 * MCX_INVCDF_MAX_MEDIA, sizeof(unsigned long long));
+        CUDA_ASSERT(cudaMemcpyToSymbol(ginvcdfhit, zerohit, sizeof(unsigned long long) * 2 * MCX_INVCDF_MAX_MEDIA, 0, cudaMemcpyHostToDevice));
+        free(zerohit);
     }
 
     if (cfg->nangle) {
@@ -4842,6 +4968,26 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
 #endif
     }
     #pragma omp barrier
+
+    /**
+     * Read back the per-medium inverse-CDF execution counters from this device and accumulate
+     * them into cfg->invcdfhit. This is the mechanism that proves the per-medium path actually ran
+     * for each medium, and that any native-HG fallback was taken deliberately rather than silently.
+     */
+    if (cfg->invcdfcount && cfg->invcdfhit && cfg->invcdfhitlen) {
+        unsigned long long* devhit = (unsigned long long*)calloc(2 * MCX_INVCDF_MAX_MEDIA, sizeof(unsigned long long));
+        CUDA_ASSERT(cudaMemcpyFromSymbol(devhit, ginvcdfhit, sizeof(unsigned long long) * 2 * MCX_INVCDF_MAX_MEDIA, 0, cudaMemcpyDeviceToHost));
+
+        #pragma omp critical
+        {
+            for (unsigned int i = 0; i < cfg->invcdfhitlen && i < 2 * MCX_INVCDF_MAX_MEDIA; i++) {
+                cfg->invcdfhit[i] += devhit[i];
+            }
+        }
+
+        free(devhit);
+    }
+
     /**
      * Copying GPU photon states back to host as Ppos, Pdir and Plen for debugging purpose is depreciated
      */
@@ -4894,6 +5040,37 @@ void mcx_run_simulation(Config* cfg, GPUInfo* gpu) {
         cfg->energyabs = cfg->energytot - cfg->energyesc;
     }
     #pragma omp barrier
+
+    /**
+     * Report the per-medium inverse-CDF execution counters. Printed once, after every device has
+     * contributed, so that "the per-medium path ran, and here is how often, per medium" is a fact in
+     * the run log rather than an inference.
+     */
+    #pragma omp barrier
+    #pragma omp master
+    {
+        if (cfg->invcdfcount && cfg->invcdfhit && cfg->invcdfhitlen) {
+            unsigned long long tabletot = 0, hgtot = 0;
+            MCX_FPRINTF(cfg->flog, "\n%s\n", "per-medium inverse-CDF execution counters (label: table-sampled / native-HG-sampled)");
+
+            for (unsigned int i = 0; i + 1 < cfg->invcdfhitlen; i += 2) {
+                if (cfg->invcdfhit[i] || cfg->invcdfhit[i + 1]) {
+                    MCX_FPRINTF(cfg->flog, "  medium %-4u %20llu %20llu%s\n", (i >> 1) + 1,
+                                cfg->invcdfhit[i], cfg->invcdfhit[i + 1],
+                                (cfg->invcdfhit[i + 1] && cfg->invcdfmedianum) ? "   <== NATIVE-HG FALLBACK" : "");
+                }
+
+                tabletot += cfg->invcdfhit[i];
+                hgtot += cfg->invcdfhit[i + 1];
+            }
+
+            MCX_FPRINTF(cfg->flog, "  %-11s %20llu %20llu\n\n", "TOTAL", tabletot, hgtot);
+
+            if (cfg->invcdfmedianum && tabletot == 0) {
+                MCX_FPRINTF(cfg->flog, S_RED "WARNING: per-medium inverse-CDF tables were declared but NO scattering event used one; this run is vacuous with respect to the per-medium phase function\n" S_RESET);
+            }
+        }
+    }
 
     /**
      * Simulation is complete, now we need clear up all GPU memory buffers

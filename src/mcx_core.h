@@ -36,6 +36,7 @@
 #define _MCEXTREME_GPU_LAUNCH_H
 
 #include "mcx_utils.h"
+#include "mcx_const.h"   /**< MCX_INVCDF_MASK_WORDS is used in the MCXParam block below */
 
 #ifdef  __cplusplus
 extern "C" {
@@ -207,6 +208,23 @@ typedef struct  __align__(16) KernelParams {
     unsigned int isrfforward;           /**< 1 when running RF forward (non-replay) FD simulation with complex weight; uses 4x field buffer */
     float lambda;                      /**< light wavelength (in nm), for polarized light / birefringence simulation */
     unsigned char bc[12];              /**< boundary condition flags, copy the first 12 chars from cfg->bc without the terminating NULL */
+    /**
+     * Per-medium inverse-CDF phase functions.
+     *
+     * These three members are appended at the END of the struct on purpose: the MCXParam aggregate
+     * initialiser in mcx_run_simulation() is positional, so anything inserted earlier would silently
+     * shift every subsequent field. They are assigned explicitly after the initialiser instead.
+     *
+     * \c invcdfmedianum == 0  -> legacy behaviour: one global table of \c nphase floats, staged into
+     *                            shared memory at kernel entry exactly as upstream does.
+     * \c invcdfmedianum  > 0  -> per-medium mode: \c ginvcdf holds a dense row-major
+     *                            [invcdfmedianum x nphase] block resident in GLOBAL memory; row m-1
+     *                            belongs to label medium m. Nothing is staged into shared memory, so
+     *                            \c nphaselen is forced to 0 in this mode.
+     */
+    unsigned int invcdfmedianum;                     /**< 0 = legacy single global table; >0 = number of dense per-medium table rows */
+    unsigned int invcdfcount;                        /**< 1 = accumulate per-medium execution counters into ginvcdfhit */
+    unsigned int invcdfmask[MCX_INVCDF_MASK_WORDS];  /**< bit m set = label medium m owns a table row; clear = medium falls back to the native HG branch */
 } MCXParam;
 
 void mcx_run_simulation(Config* cfg, GPUInfo* gpu);

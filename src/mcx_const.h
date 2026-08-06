@@ -38,6 +38,7 @@
 #define MCX_VERSION        "v2025.10"
 #define MCX_VERSION_MAJOR  2
 #define MCX_VERSION_MINOR  8
+#define MCX_MOD_VERSION    "material-optics-v1"
 
 #define HALF_PI            1.5707963267948966f     /**< pi/2 */
 #define ONE_PI             3.1415926535897932f     /**< pi */
@@ -58,6 +59,20 @@
 #define MAX_PROP_AND_DETECTORS   1000              /**< maximum number of property + number of detectors. Reduced from 4000 to accomodate birefringence properties */
 #define SEED_FROM_FILE      -999                   /**< special flag indicating to read seeds from an mch file for replay */
 #define NANGLES            1000                    /**< number of discretization points in scattering angles */
+
+/**
+ * Per-medium inverse-CDF phase functions.
+ *
+ * \c MCX_INVCDF_MASK_WORDS is the number of 32-bit words needed to carry one presence bit for
+ * every possible label medium. The mask lives in the constant-memory MCXParam block, so testing
+ * "does this medium own a table?" costs a constant-cache broadcast and no global load.
+ * \c MCX_INVCDF_MAX_MEDIA is the hard ceiling on per-medium table rows; it is the pre-existing
+ * medium-count ceiling, i.e. the feature introduces no new ceiling of its own.
+ */
+#define MCX_INVCDF_MASK_WORDS  ((MAX_PROP_AND_DETECTORS + 31) >> 5)  /**< 32-bit words in the per-medium invcdf presence mask */
+#define MCX_INVCDF_MAX_MEDIA   MAX_PROP_AND_DETECTORS                /**< max label media that can own an inverse-CDF table */
+#define MCX_INVCDF_SCHEMA      "mcx_mod.per_material_invcdf"         /**< accepted per-medium table document schema */
+#define MCX_INVCDF_SCHEMA_MAJOR 1                                    /**< accepted major schema version */
 
 #define SIGN_BIT           0x80000000U
 #define DET_MASK           0x80000000              /**< mask of the sign bit to get the detector */

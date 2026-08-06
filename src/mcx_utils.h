@@ -296,7 +296,19 @@ typedef struct MCXConfig {
     float* dz;                   /**< anisotropic voxel spacing for z-axis */
     char bc[13];                 /**<boundary condition flag for [-x,-y,-z,+x,+y,+z, det(-x,-y,-z,+x,+y,+z)], last element is always NULL for string termination */
     unsigned int nphase;         /**< number of samples for inverse-cdf, will be added by 2 to include -1 and 1 on the two ends */
-    float* invcdf;               /**< equal-space sampled inversion of CDF(cos(theta)) for the phase function of the zenith angle */
+    float* invcdf;               /**< equal-space sampled inversion of CDF(cos(theta)) for the phase function of the zenith angle;
+                                      when invcdfmedianum==0 this is one table of nphase floats (legacy global table);
+                                      when invcdfmedianum>0 it is a dense [invcdfmedianum x nphase] row-major block, row m-1 belonging to label medium m */
+    unsigned int invcdfmedianum; /**< number of per-medium inverse-CDF table rows; 0 = legacy single global table */
+    unsigned char* invcdfrowvalid; /**< length invcdfmedianum; 1 = row carries a declared table, 0 = medium falls back to the native HG path */
+    float invcdflambda;          /**< wavelength (nm) declared by the per-medium table document; provenance only, MCX has no wavelength axis in the phase machinery */
+    int invcdfcount;             /**< 1 = accumulate per-medium execution counters on the GPU (diagnostic, costs one atomic per scattering event) */
+    unsigned long long* invcdfhit; /**< 2*invcdfmedianum counters read back from the GPU; [2*i]=table draws in medium i+1, [2*i+1]=native-HG draws in medium i+1 */
+    unsigned int invcdfhitlen;   /**< number of entries in invcdfhit */
+    char invcdfbgpolicy[32];     /**< declared background (medium 0) policy from the table document */
+    char invcdffile[MAX_PATH_LENGTH]; /**< path of the per-medium table document, recorded in the run manifest */
+    char invcdfdocid[64];        /**< schema_version of the loaded document */
+    int invcdfmanifestdone;      /**< internal guard so the run manifest is printed exactly once */
     unsigned int nangle;         /**< number of samples for inverse-cdf of launch angle, will be added by 2 to include -1 and 1 on the two ends */
     float* angleinvcdf;          /**< equal-space sampled inversion of CDF(cos(theta)) for the phase function of the zenith angle of photon launch */
     int srcid;                   /**< flag to control the simulation of multiple sources */
@@ -317,6 +329,11 @@ void mcx_writeconfig(char* fname, Config* cfg);
 void mcx_initcfg(Config* cfg);
 void mcx_clearcfg(Config* cfg);
 void mcx_preprocess(Config* cfg);
+void mcx_load_invcdf_media(Config* cfg, cJSON* doc, const char* docdir);
+void mcx_load_invcdf_media_file(Config* cfg, const char* fname);
+void mcx_prep_invcdf_media(Config* cfg);
+void mcx_print_invcdf_manifest(Config* cfg);
+void mcx_sha256_hex(const void* data, size_t len, char out[65]);
 void mcx_parsecmd(int argc, char* argv[], Config* cfg);
 void mcx_usage(Config* cfg, char* exename);
 void mcx_printheader(Config* cfg);

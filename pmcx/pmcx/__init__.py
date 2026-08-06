@@ -30,7 +30,7 @@ res = pmcx.run(nphoton=1000000, vol=np.ones([60, 60, 60], dtype='uint8'),
 """
 
 try:
-    from _pmcx import gpuinfo, mie_smatrix, run, version
+    from _pmcx import gpuinfo, mie_smatrix, mod_version, run, version
 except ImportError:  # pragma: no cover
     print("the pmcx binary extension (_pmcx) is not compiled! please compile first")
 
@@ -79,6 +79,7 @@ __all__ = (
     "gpuinfo",
     "run",
     "version",
+    "mod_version",
     "mie_smatrix",
     "ensemble_smatrix",
     "bench",
